@@ -28,6 +28,8 @@ export class SearchEngine {
   timeUp() { return this.stopped || this.nodes >= this.config.nodeLimit || (this.deadline && performanceNow() >= this.deadline); }
 
   see(position,move) {
+    const key=`${position.hash}:${moveToUci(move)}`;
+    if(this.seeCache.has(key)) return this.seeCache.get(key);
     this.seeCalls++;
     return staticExchangeEval(position,move,this.seeCache);
   }
@@ -109,6 +111,8 @@ export class SearchEngine {
     let moves=this.orderMoves(position,position.legalMoves(),0,null).filter(move=>!excluded.has(moveToUci(move)));
     if(!moves.length) return {bestMove:null,score:evaluate(position,position.turn),pv:[],lines:[],complete:true};
 
+    // Tactical safety is hierarchical: if at least one move survives the next
+    // move without being mated, moves that allow mate-in-one are not candidates.
     const safety=moves.map(move=>({move,mateLoss:Boolean(this.findMateInOne(position.makeMove(move)))}));
     const safe=safety.filter(x=>!x.mateLoss).map(x=>x.move);
     if(safe.length) {
@@ -304,13 +308,20 @@ export class SearchEngine {
       const next=position.makeMove(m);
       if(next.isInCheck(next.turn)) s+=52000;
       if(m.promotion) {
+        // A promotion is exactly where “new queen” can be an illusion, so it
+        // always receives a legal exchange calculation.
         const see=this.see(position,m);
         s+=36000+(PIECE_VALUES[m.promotion]||0)*3+see*8;
       }
       if(m.flags & FLAGS.CAPTURE) {
         const victim=PIECE_VALUES[typeOf(m.captured)]||0;
-        const see=this.see(position,m);
-        s+=22000+victim*3+see*18;
+        const attacker=PIECE_VALUES[typeOf(m.piece)]||0;
+        // Full recursive SEE is expensive in this array-based engine. Use it for
+        // suspicious captures while obvious equal/favorable captures keep a cheap
+        // ordering proxy. Root search and qsearch still SEE-verify before trust.
+        const exchangeRisk=victim<attacker;
+        const see=exchangeRisk?this.see(position,m):Math.min(victim,attacker);
+        s+=22000+victim*3+see*18-attacker;
       }
       if(killers[0]===u) s+=9000; else if(killers[1]===u) s+=7000;
       s+=(this.history.get(u)||0);
@@ -323,8 +334,17 @@ export class SearchEngine {
     if(!lines?.length) return {move:bestFallback.bestMove,score:bestFallback.score,objectiveScore:bestFallback.score,pv:bestFallback.pv};
     const exactLines=lines.filter(l=>l.exact!==false);
     const pool=exactLines.length?exactLines:lines;
-    const bestScore=pool[0].score;
-    if(Math.abs(bestScore)>=MATE_SCORE-1000) return {move:pool[0].move,score:bestScore,objectiveScore:bestScore,pv:pool[0].pv};
+    const objectiveBest=[...pool].sort((a,b)=>b.score-a.score)[0];
+    const bestScore=objectiveBest.score;
+    if(Math.abs(bestScore)>=MATE_SCORE-1000) return {move:objectiveBest.move,score:bestScore,objectiveScore:bestScore,pv:objectiveBest.pv};
+
+    // King safety is a hierarchy, not a style preference. While Vanta's king is
+    // in a critically constrained tactical zone, personality cannot trade a
+    // safer objective line for activity. Aggression resumes once danger clears.
+    if(position.isInCheck() || kingSafetyCritical(position,position.turn)) {
+      return {move:objectiveBest.move,score:objectiveBest.score,objectiveScore:objectiveBest.score,pv:objectiveBest.pv};
+    }
+
     const window=this.config.selectionWindow ?? 55;
     const eligible=pool.filter(l=>l.score>=bestScore-window);
     const scored=eligible.map(l=>{
@@ -334,7 +354,7 @@ export class SearchEngine {
       const composite=l.score+personality+deterministicNoise;
       return {...l,composite};
     }).sort((a,b)=>b.composite-a.composite);
-    const pick=scored[0]||pool[0];
+    const pick=scored[0]||objectiveBest;
     return {move:pick.move,score:pick.composite,objectiveScore:pick.score,pv:pick.pv};
   }
 
