@@ -1,0 +1,40 @@
+name: Vanta Elo Calibration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/engine/elo-match.js'
+      - '.github/workflows/elo.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ELO_TARGETS: '1320,1450,1600,1750'
+      MOVE_TIME_MS: '350'
+      MAX_PLIES: '140'
+      ELO_REPORT: 'benchmarks/elo-ci.json'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Stockfish reference engine
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y stockfish
+          /usr/games/stockfish bench 1 1 1 default depth >/dev/null
+      - name: Run Vanta vs calibrated Stockfish ladder
+        run: node src/engine/elo-match.js
+      - name: Upload Elo report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vanta-elo-report
+          path: benchmarks/elo-ci.json
+          if-no-files-found: error
