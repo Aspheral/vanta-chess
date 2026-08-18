@@ -18,12 +18,10 @@ permissions:
 jobs:
   calibrate:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     env:
-      ELO_TARGETS: '1320,1450,1600,1750'
       MOVE_TIME_MS: '350'
       MAX_PLIES: '140'
-      ELO_REPORT: 'benchmarks/elo-latest.json'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -34,18 +32,33 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y stockfish
           /usr/games/stockfish bench 1 1 1 default depth >/dev/null
-      - name: Run Vanta vs calibrated Stockfish ladder
+      - name: Quick 1500 Elo anchor
+        env:
+          ELO_TARGETS: '1500'
+          ELO_REPORT: 'benchmarks/elo-quick.json'
         run: node src/engine/elo-match.js
-      - name: Upload Elo report
-        uses: actions/upload-artifact@v4
-        with:
-          name: vanta-elo-report
-          path: benchmarks/elo-latest.json
-          if-no-files-found: error
-      - name: Commit calibration snapshot
+      - name: Publish quick anchor
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add benchmarks/elo-quick.json
+          git commit -m 'Record quick Elo calibration' || true
+          git push
+      - name: Full Stockfish Elo ladder
+        env:
+          ELO_TARGETS: '1320,1450,1600,1750'
+          ELO_REPORT: 'benchmarks/elo-latest.json'
+        run: node src/engine/elo-match.js
+      - name: Upload Elo reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: vanta-elo-report
+          path: |
+            benchmarks/elo-quick.json
+            benchmarks/elo-latest.json
+          if-no-files-found: error
+      - name: Publish full calibration
+        run: |
           git add benchmarks/elo-latest.json
-          git commit -m 'Record Elo calibration snapshot' || exit 0
+          git commit -m 'Record full Elo calibration' || true
           git push
