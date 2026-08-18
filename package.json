@@ -1,0 +1,11 @@
+{
+  "name": "vanta-chess",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 4173",
+    "test": "node --test",
+    "benchmark": "node src/engine/benchmark.js"
+  }
+}
