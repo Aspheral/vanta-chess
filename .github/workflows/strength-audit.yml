@@ -14,16 +14,26 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: legacy
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Reproduce critical Vanta positions
         run: node src/engine/strength-audit.js | tee strength-audit.log
-      - name: Upload audit log
+      - name: Compare main baseline with revised engine
+        env:
+          LEGACY_ROOT: legacy
+        run: node src/engine/compare-legacy.js | tee legacy-comparison.log
+      - name: Upload audit logs
         uses: actions/upload-artifact@v4
         with:
           name: vanta-strength-audit
-          path: strength-audit.log
+          path: |
+            strength-audit.log
+            legacy-comparison.log
