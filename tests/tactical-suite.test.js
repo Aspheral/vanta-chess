@@ -24,7 +24,7 @@ test('tactical catalog: royal fork is preferred over quiet play',()=>{
   const p=Position.fromFEN(fen);
   const fork=p.makeMove(p.moveFromUci('f5d6'));
   assert.equal(fork.isInCheck(),true);
-  assert.equal(fork.isSquareAttacked(13,'w'),true); // f7 queen is forked by Nd6+
+  assert.equal(fork.isSquareAttacked(13,'w'),true);
 });
 
 test('tactical catalog: pinned recapture is excluded from legal SEE',()=>{
@@ -44,18 +44,25 @@ test('tactical catalog: x-ray attacker appears after the front bishop moves',()=
   assert.ok(see>=70&&see<=100,`expected Bxd5 Nxd5 Qxd5 x-ray sequence, SEE ${see}`);
 });
 
-test('tactical catalog: queen sacrifice is allowed when it forces a mating net',()=>{
+test('tactical catalog: non-capture queen sacrifice is preserved when search proves mate',()=>{
   const fen='5r1k/6pp/4Q2N/8/8/8/8/K7 w - - 0 1';
   const p=Position.fromFEN(fen);
   const sac=p.moveFromUci('e6g8');
   assert.ok(sac);
-  assert.ok(staticExchangeEval(p,sac)<0,'Qg8+ should look materially sacrificial to SEE');
+  assert.equal(staticExchangeEval(p,sac),0,'capture SEE intentionally stays neutral on a quiet sacrifice');
+  const afterSac=p.makeMove(sac);
+  const forced=afterSac.moveFromUci('f8g8');
+  assert.ok(forced,'...Rxg8 must be the tactical acceptance of the queen sacrifice');
+  const afterRook=afterSac.makeMove(forced);
+  const mate=afterRook.moveFromUci('h6f7');
+  assert.ok(mate);
+  assert.equal(afterRook.makeMove(mate).status().reason,'checkmate');
   const r=search(fen);
   assert.equal(moveToUci(r.move),'e6g8',`Vanta must preserve sound sacrifices: ${r.pv.map(moveToUci).join(' ')}`);
 });
 
 test('tactical catalog: knight underpromotion can be the forcing move',()=>{
-  const fen='8/4P1k1/5q2/8/8/8/8/K7 w - - 0 1';
+  const fen='8/4P1k1/5q2/8/8/8/K7/8 w - - 0 1';
   const p=Position.fromFEN(fen);
   const knight=p.moveFromUci('e7e8n');
   assert.ok(knight);
@@ -80,7 +87,7 @@ test('tactical catalog: winning side avoids a one-move stalemate trap',()=>{
   assert.ok(trap);
   assert.equal(p.makeMove(trap).status().reason,'stalemate');
   const r=search(fen);
-  assert.notEqual(moveToUci(r.move),'h1h7',`Vanta threw away a win by stalemate`);
+  assert.notEqual(moveToUci(r.move),'h1h7','Vanta threw away a win by stalemate');
 });
 
 test('tactical catalog: discovered/double-check geometry survives legal move generation',()=>{
