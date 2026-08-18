@@ -1,0 +1,106 @@
+{
+  "generatedAt": "2026-08-18T02:17:40.678Z",
+  "targetElo": 1500,
+  "note": "Target strength is a calibration goal, not an empirically verified Elo rating.",
+  "performance": [
+    {
+      "name": "Starting position",
+      "bestMove": "g1f3",
+      "depth": 2,
+      "nodes": 1584,
+      "qnodes": 1382,
+      "totalNodes": 2966,
+      "nodesPerSecond": 8467,
+      "moveTimeMs": 350,
+      "transpositionHits": 0,
+      "transpositionHitRate": 0
+    },
+    {
+      "name": "Italian tension",
+      "bestMove": "f3g5",
+      "depth": 1,
+      "nodes": 547,
+      "qnodes": 4238,
+      "totalNodes": 4785,
+      "nodesPerSecond": 13665,
+      "moveTimeMs": 350,
+      "transpositionHits": 0,
+      "transpositionHitRate": 0
+    },
+    {
+      "name": "King attack",
+      "bestMove": "f3g3",
+      "depth": 1,
+      "nodes": 782,
+      "qnodes": 4906,
+      "totalNodes": 5688,
+      "nodesPerSecond": 16249,
+      "moveTimeMs": 350,
+      "transpositionHits": 0,
+      "transpositionHitRate": 0
+    }
+  ],
+  "tactical": {
+    "passed": 3,
+    "total": 3,
+    "successRate": 100,
+    "cases": [
+      {
+        "name": "Mate in one",
+        "passed": true,
+        "move": "h6g7",
+        "depth": 1,
+        "nodes": 37,
+        "timeMs": 4
+      },
+      {
+        "name": "Recover hanging queen",
+        "passed": true,
+        "move": "d2d4",
+        "depth": 4,
+        "nodes": 4086,
+        "timeMs": 143
+      },
+      {
+        "name": "Answer immediate rook check",
+        "passed": true,
+        "move": "e1e2",
+        "depth": 4,
+        "nodes": 561,
+        "timeMs": 13
+      }
+    ]
+  },
+  "ponder": {
+    "branchesGenerated": 4,
+    "generationTimeMs": 1452,
+    "exactLookupHits": 1,
+    "unexpectedLookupMisses": 1,
+    "sampleBranches": [
+      {
+        "opponentMove": "d1h5",
+        "engineMove": "d8f6",
+        "depth": 3,
+        "evaluation": -100
+      },
+      {
+        "opponentMove": "g1f3",
+        "engineMove": "g8f6",
+        "depth": 3,
+        "evaluation": -44
+      },
+      {
+        "opponentMove": "d1f3",
+        "engineMove": "d8h4",
+        "depth": 3,
+        "evaluation": -40
+      },
+      {
+        "opponentMove": "f1c4",
+        "engineMove": "d8h4",
+        "depth": 3,
+        "evaluation": -34
+      }
+    ]
+  }
+}
