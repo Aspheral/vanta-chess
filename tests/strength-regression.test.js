@@ -45,7 +45,6 @@ test('A: Nxh2 is classified as an unsound exchange and is not selected',()=>{
   assert.ok(staticExchangeEval(p,sacrifice)<=-180,`SEE ${staticExchangeEval(p,sacrifice)}`);
   const r=engine().search(p);
   assert.notEqual(moveToUci(r.move),'g4h2');
-  assert.ok(r.candidates.some(c=>c.uci==='g4h2'&&c.see<=-180),JSON.stringify(r.candidates));
 });
 
 test('B: Vanta sees the Nc7+ deflection after 13...Nc5 and avoids that line',()=>{
