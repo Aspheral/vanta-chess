@@ -37,3 +37,27 @@ jobs:
           path: |
             strength-audit.log
             legacy-comparison.log
+
+  selfplay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: legacy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Old Vanta versus revised Vanta
+        env:
+          LEGACY_ROOT: legacy
+          SELFPLAY_MOVE_MS: '180'
+          SELFPLAY_MAX_PLIES: '110'
+        run: node src/engine/selfplay-compare.js | tee selfplay-comparison.log
+      - name: Upload self-play report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vanta-selfplay-audit
+          path: selfplay-comparison.log
