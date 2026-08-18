@@ -1,0 +1,117 @@
+/* Move motion ------------------------------------------------------------- */
+.animation-hidden{visibility:hidden!important}
+.moving-piece{
+  position:absolute;
+  z-index:12;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  line-height:0;
+  pointer-events:none;
+  user-select:none;
+  -webkit-user-select:none;
+  will-change:transform,filter;
+}
+.moving-piece .piece-svg{width:78%;height:78%;display:block;overflow:visible}
+
+/* iOS / mobile shell ------------------------------------------------------ */
+html,body,#app{min-height:100%;min-height:100dvh}
+html{background:var(--bg);-webkit-text-size-adjust:100%}
+body{
+  min-height:100dvh;
+  overflow-x:hidden;
+  overscroll-behavior-y:contain;
+  -webkit-font-smoothing:antialiased;
+  -webkit-tap-highlight-color:transparent;
+}
+.app{min-height:100dvh}
+.topbar{
+  min-height:58px;
+  height:auto;
+  padding-left:max(22px,env(safe-area-inset-left));
+  padding-right:max(22px,env(safe-area-inset-right));
+  padding-top:env(safe-area-inset-top);
+}
+.workspace{
+  padding-left:max(24px,env(safe-area-inset-left));
+  padding-right:max(24px,env(safe-area-inset-right));
+  padding-bottom:max(24px,env(safe-area-inset-bottom));
+}
+button,.btn,.icon-btn,.switch,.square{touch-action:manipulation}
+input,select,textarea{font-size:16px}
+.square{-webkit-touch-callout:none}
+
+@media(max-width:980px){
+  .workspace{
+    grid-template-columns:1fr;
+    gap:14px;
+    padding:14px max(12px,env(safe-area-inset-right)) max(20px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
+  }
+  .left-col,.side{width:100%;max-width:760px;margin-inline:auto}
+  .board-wrap,.board-footer{
+    width:min(100%,calc(100dvh - 154px),720px);
+  }
+  .board-footer{min-height:44px;margin-top:8px}
+  .icon-btn{min-width:44px;min-height:42px;display:grid;place-items:center}
+  .side{gap:10px}
+  .panel{border-radius:9px}
+  .panel-head{min-height:42px;height:auto;padding:10px 12px}
+  .btn{min-height:44px}
+  .topbar{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
+  .top-actions .hide-mobile{display:none}
+}
+
+@media(max-width:600px){
+  .topbar{min-height:52px}
+  .brand{gap:9px;font-size:15px}
+  .mark{width:20px;height:20px}
+  .mark:after{width:7px;height:7px}
+  .mode-pill{font-size:10px;padding:4px 7px}
+  .top-actions .btn{min-height:38px;padding:7px 10px;font-size:13px}
+  .workspace{padding-top:9px;gap:10px}
+  .board-wrap,.board-footer{width:100%}
+  .board-wrap{border-radius:2px;box-shadow:0 14px 40px #0008}
+  .board-footer{margin-top:7px}
+  .turn-label{font-size:12px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;padding:10px}
+  .controls .wide{grid-column:1/-1}
+  .controls .btn{min-width:0;padding-inline:7px}
+  .metrics{grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+  .metric b{font-size:12px}.metric span{font-size:8px}
+  .engine-card{padding:12px}
+  .eval{font-size:25px}
+  .history{max-height:210px}
+  .move-row{padding-inline:10px}
+  .branches{padding:4px}
+  .branch{padding:8px 6px;gap:8px}
+  .branch-meta{overflow-wrap:anywhere}
+  .toggle-row{min-height:44px}
+  .editor{padding:10px}
+  .palette{grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+  .palette button{min-width:0;height:42px}
+  .promotion-box{max-width:calc(100vw - 24px);padding:10px;gap:6px}
+  .promotion-box button{width:min(19vw,64px);height:min(19vw,64px)}
+  .toast{bottom:max(14px,env(safe-area-inset-bottom));max-width:calc(100vw - 24px)}
+}
+
+@media(max-width:390px){
+  .mode-pill{display:none}
+  .brand{gap:8px}
+  .metrics{grid-template-columns:repeat(2,1fr)}
+  .panel-sub{font-size:10px}
+}
+
+@media(max-width:980px) and (orientation:landscape){
+  .board-wrap,.board-footer{width:min(72vw,calc(100dvh - 104px),650px)}
+}
+
+@media(display-mode:standalone){
+  body{overscroll-behavior:none}
+  .topbar{padding-top:max(env(safe-area-inset-top),6px)}
+  .workspace{padding-bottom:max(22px,env(safe-area-inset-bottom))}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .piece,.switch span,.toast{transition:none!important}
+  .moving-piece{display:none!important}
+}
