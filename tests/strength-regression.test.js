@@ -55,15 +55,15 @@ test('B: Vanta sees the Nc7+ deflection after 13...Nc5 and avoids that line',()=
   const afterNc5=p.makeMove(nc5);
   const nc7=afterNc5.moveFromUci('b5c7');
   assert.ok(nc7);
-  assert.equal(afterNc5.makeMove(nc7).isInCheck(),true,'Nc7+ must be recognized as check');
   const afterCheck=afterNc5.makeMove(nc7);
+  assert.equal(afterCheck.isInCheck(),true,'Nc7+ must be recognized as check');
   const qxc7=afterCheck.moveFromUci('d8c7');
   assert.ok(qxc7);
   const afterQueen=afterCheck.makeMove(qxc7);
   const dxc7=afterQueen.moveFromUci('d6c7');
   assert.ok(dxc7);
   const final=afterQueen.makeMove(dxc7);
-  assert.equal(final.board[11],null,'black queen must be gone after dxc7');
+  assert.equal(final.board.includes('q'),false,'black queen must be gone after dxc7');
   assert.equal(final.board[10],'P','white passer must land on c7');
 
   const r=engine(1100,4).search(p);
