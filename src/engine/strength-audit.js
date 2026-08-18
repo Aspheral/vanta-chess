@@ -6,7 +6,7 @@ import { evaluate } from './evaluation.js';
 const GAME = [
   'b1c3','g8f6','g1f3','b8c6','e2e4','f6g4','d2d4','a7a5','c1f4','b7b6','f1c4','c8b7',
   'd4d5','g4h2','h1h2','c6b4','a2a3','b7a6','c4a6','b4a6','c3b5','c7c5','e4e5','c5c4',
-  'd5d6','a6c5','b5c7','d8c7','d6c7','f6e4','f3d4','c4c3','e5e6','f7e6','d4e6','d7e6',
+  'd5d6','a6c5','b5c7','d8c7','d6c7','c5e4','f3d4','c4c3','e5e6','f7e6','d4e6','d7e6',
   'd1d4','c3b2','a1d1','b2b1q','d1b1','e4d6','b1d1','b6b5','f4d6','e7d6','d4b6','e8f7',
   'b6b8','a8a6','c7c8q','f7f6','d1d6','f8d6','h2h3','h8c8','h3f3','f6g6','b8b7','a6a8',
   'b7e4','g6h6','e4g4','d6a3','f3h3'
