@@ -1,7 +1,7 @@
 import { FLAGS, moveToUci } from '../chess/position.js';
-import { PIECE_VALUES, typeOf } from '../chess/constants.js';
+import { PIECE_VALUES, colorOf, typeOf } from '../chess/constants.js';
 import { evaluate, personalityMoveBonus, MATE_SCORE } from './evaluation.js';
-import { strengthConfig } from './personality.js';
+import { strengthConfig, VANTA_PERSONALITY } from './personality.js';
 
 const INF = 1_000_000;
 
@@ -36,8 +36,11 @@ export class SearchEngine {
     }
     const elapsed=Math.max(1,performanceNow()-this.start);
     if(!best) {
-      const legal=position.legalMoves();
-      if(legal.length) best={bestMove:legal[0],score:evaluate(position.makeMove(legal[0]),position.turn),pv:[legal[0]],lines:[]};
+      const excluded=new Set(options.excludeMoves||[]);
+      const allLegal=position.legalMoves();
+      const legal=allLegal.filter(move=>!excluded.has(moveToUci(move)));
+      const fallback=legal.length?legal:allLegal;
+      if(fallback.length) best={bestMove:fallback[0],score:evaluate(position.makeMove(fallback[0]),position.turn),pv:[fallback[0]],lines:[]};
       else best={bestMove:null,score:evaluate(position,position.turn),pv:[],lines:[]};
     }
     const chosen=this.personalitySelect(position, rootLines.length?rootLines:best.lines || [], best);
@@ -58,7 +61,8 @@ export class SearchEngine {
   }
 
   searchRoot(position, depth, options={}) {
-    let moves=this.orderMoves(position,position.legalMoves(),0,null);
+    const excluded=new Set(options.excludeMoves||[]);
+    let moves=this.orderMoves(position,position.legalMoves(),0,null).filter(move=>!excluded.has(moveToUci(move)));
     const lines=[];
     for(const move of moves) {
       if(this.timeUp()) break;
@@ -78,7 +82,12 @@ export class SearchEngine {
   negamax(position,depth,alpha,beta,ply,pvOut,pathHashes) {
     this.nodes++;
     if((this.nodes & 1023)===0 && this.timeUp()) return evaluate(position,position.turn);
-    if(pathHashes.some(h=>h===position.hash)) return 0;
+    // A repeated position is a draw only on its third occurrence, not the second.
+    // The previous implementation treated the first recurrence as a draw, which
+    // made Vanta far more repetition-happy than actual chess rules require.
+    let priorOccurrences=0;
+    for(const hash of pathHashes) if(hash===position.hash) priorOccurrences++;
+    if(priorOccurrences>=2) return this.repetitionUtility(position);
     const status=position.status(1);
     if(status.over) {
       if(status.reason==='checkmate') return -MATE_SCORE+ply;
@@ -190,6 +199,18 @@ export class SearchEngine {
     return {move:pick.move,score:pick.composite,objectiveScore:pick.score,pv:pick.pv};
   }
 
+  repetitionUtility(position) {
+    const staticScore=evaluate(position,position.turn);
+    const material=materialBalance(position,position.turn);
+    const aversion=180+Math.round((VANTA_PERSONALITY.drawAversion/100)*520);
+    // Vanta treats a draw as a bad result when the side to move is materially
+    // ahead OR objectively winning. When behind, a repetition is an acceptable
+    // defensive resource. Negamax flips this value correctly for the opponent.
+    if(material>0 || staticScore>=80) return -aversion;
+    if(material<0 || staticScore<=-80) return Math.round(aversion*0.35);
+    return 0;
+  }
+
   predictBranches(position,count=4,options={}) {
     const predictionDepth=Math.max(2,Math.min(4,(options.depth ?? this.config.maxDepth)-1));
     const opponentSearch=new SearchEngine({...this.config,maxDepth:predictionDepth,moveTimeMs:Math.max(60,Math.floor((options.timeMs??220)/2)),nodeLimit:60000,selectionWindow:0,evalNoise:0});
@@ -217,4 +238,13 @@ function pseudoNoise(hash,move,amplitude) {
   let x=Number((hash ^ BigInt(move.from*131+move.to*17+(move.promotion?.charCodeAt(0)||0))) & 0xffffffffn)>>>0;
   x ^= x<<13; x ^= x>>>17; x ^= x<<5;
   return Math.round((((x>>>0)/0xffffffff)*2-1)*amplitude);
+}
+function materialBalance(position,color) {
+  let score=0;
+  for(const piece of position.board) {
+    if(!piece) continue;
+    const value=PIECE_VALUES[typeOf(piece)]||0;
+    score+=colorOf(piece)===color?value:-value;
+  }
+  return score;
 }
