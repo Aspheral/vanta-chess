@@ -1,5 +1,5 @@
 import { FLAGS, moveToUci } from '../chess/position.js';
-import { PIECE_VALUES, colorOf, typeOf, rowCol, opposite, WHITE } from '../chess/constants.js';
+import { PIECE_VALUES, colorOf, typeOf, rowCol, opposite, WHITE, KING_DELTAS, inBounds } from '../chess/constants.js';
 
 const MAX_SEE_PLIES = 10;
 
@@ -64,14 +64,34 @@ export function isKingZoneMove(position, move, radius = 3) {
   const [tr, tc] = rowCol(move.to);
   if (Math.max(Math.abs(kr - tr), Math.abs(kc - tc)) <= radius) return true;
 
-  // Sliding moves that uncover a line into the king zone are tactically relevant
-  // even when the moving piece itself finishes farther away.
   const next = position.makeMove(move);
   const zone = [];
   for (let r = Math.max(0, kr - 1); r <= Math.min(7, kr + 1); r++) {
     for (let c = Math.max(0, kc - 1); c <= Math.min(7, kc + 1); c++) zone.push(r * 8 + c);
   }
   return zone.some(square => next.isSquareAttacked(square, position.turn));
+}
+
+export function kingSafetyCritical(position, color = position.turn) {
+  const king = position.kingSquare(color);
+  if (king < 0) return true;
+  const enemy = opposite(color);
+  if (position.isSquareAttacked(king, enemy)) return true;
+  const [kr,kc] = rowCol(king);
+  let usable = 0;
+  let attacked = 0;
+  for (const [dr,dc] of KING_DELTAS) {
+    const r=kr+dr,c=kc+dc;
+    if (!inBounds(r,c)) continue;
+    const sq=r*8+c;
+    const p=position.board[sq];
+    if (p && colorOf(p)===color) continue;
+    usable++;
+    if (position.isSquareAttacked(sq, enemy)) attacked++;
+  }
+  // Avoid flagging a boxed-in starting king simply because its own pieces occupy
+  // every escape square. Danger requires enemy control of most usable exits.
+  return usable > 0 && attacked >= Math.max(2, usable - 1);
 }
 
 export function isAdvancedPawnPush(position, move) {
