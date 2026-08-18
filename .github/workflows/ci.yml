@@ -17,6 +17,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Validate browser and PWA syntax
+        run: |
+          node --check src/main.js
+          node --check src/ui/board.js
+          node --check src/ui/audio.js
+          node --check sw.js
+          node -e "JSON.parse(require('fs').readFileSync('manifest.webmanifest','utf8'))"
       - name: Run engine regression suite
         run: npm test
       - name: Run benchmark smoke test
