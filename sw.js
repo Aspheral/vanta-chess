@@ -1,11 +1,27 @@
-const CACHE='vanta-chess-v2';
+const CACHE='vanta-chess-v3';
 const SHELL=[
   './',
   './index.html',
   './manifest.webmanifest',
   './src/styles.css',
   './src/board-refresh.css',
+  './src/ux-mobile.css',
   './src/main.js',
+  './src/chess/constants.js',
+  './src/chess/game.js',
+  './src/chess/position.js',
+  './src/chess/san.js',
+  './src/chess/zobrist.js',
+  './src/engine/controller.js',
+  './src/engine/draw-policy.js',
+  './src/engine/evaluation.js',
+  './src/engine/personality.js',
+  './src/engine/search.js',
+  './src/engine/worker.js',
+  './src/ui/arrows.js',
+  './src/ui/audio.js',
+  './src/ui/board.js',
+  './src/ui/pieces.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png'
