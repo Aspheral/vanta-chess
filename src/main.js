@@ -3,6 +3,7 @@ import { moveToSAN } from './chess/san.js';
 import { Position } from './chess/position.js';
 import { WHITE, BLACK, colorOf, indexToSquare, squareToIndex } from './chess/constants.js';
 import { EngineController } from './engine/controller.js';
+import { repetitionExclusions, shouldRejectRepetitionMove } from './engine/draw-policy.js';
 import { BoardView } from './ui/board.js';
 import { BRANCH_COLORS } from './ui/arrows.js';
 
@@ -188,10 +189,12 @@ class VantaApp {
     this.startEngineMove();
   }
 
-  startEngineMove(){
+  startEngineMove(knownScore=0){
     if(this.game.status().over)return;
-    const fen=this.game.position.toFEN(); this.pendingPurpose='play';this.pendingFen=fen;this.state=STATES.ENGINE_SEARCHING;this.analysisArrow=null;this.render();
-    this.controller.search(fen,{moveTimeMs:350,maxDepth:5});
+    const fen=this.game.position.toFEN();
+    const excludeMoves=repetitionExclusions(this.game,knownScore);
+    this.pendingPurpose='play';this.pendingFen=fen;this.state=STATES.ENGINE_SEARCHING;this.analysisArrow=null;this.render();
+    this.controller.search(fen,{moveTimeMs:350,maxDepth:5,excludeMoves});
   }
 
   startAnalysis(){
@@ -207,12 +210,24 @@ class VantaApp {
     }
     if(this.pendingPurpose==='play'&&result.move){
       const m=this.game.position.moveFromUci(result.move);
+      const objective=result.objectiveScore??result.score??0;
+      if(m&&shouldRejectRepetitionMove(this.game,m,objective)){
+        this.setBanner('Vanta refuses a repetition draw while ahead.');
+        this.startEngineMove(objective);
+        return;
+      }
       if(m)this.applyEngineMove(m,false);
     }
   }
 
   applyEngineMove(move,ponderHit=false){
     if(this.game.position.turn===this.playerColor&&this.mode==='play')return;
+    const objective=this.engineInfo?.objectiveScore??this.engineInfo?.score??0;
+    if(this.mode==='play'&&shouldRejectRepetitionMove(this.game,move,objective)){
+      this.setBanner('Vanta refuses a repetition draw while ahead.');
+      this.startEngineMove(objective);
+      return;
+    }
     this.game.play(move);this.analysisArrow=null;
     const status=this.game.status();
     if(status.over){this.state=STATES.GAME_OVER;this.render();return;}
