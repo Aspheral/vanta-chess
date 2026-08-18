@@ -75,11 +75,10 @@ export class SearchEngine {
       else best={bestMove:null,score:evaluate(position,position.turn),pv:[],lines:[]};
     }
 
-    // Never let personality choose from an incomplete first iteration. At that
-    // point the objective comparison is already uncertain enough.
-    const chosen=completedDepth===0
+    const selected=completedDepth===0
       ? {move:best.bestMove,score:best.score,objectiveScore:best.score,pv:best.pv}
       : this.personalitySelect(position, rootLines.length?rootLines:best.lines || [], best);
+    const chosen=this.tacticalSafetyVeto(position,selected,rootLines.length?rootLines:best.lines||[],best,options);
     return {
       move: chosen.move || best.bestMove,
       score: chosen.score ?? best.score,
@@ -100,6 +99,37 @@ export class SearchEngine {
     };
   }
 
+  tacticalSafetyVeto(position,chosen,lines,bestFallback,options={}) {
+    if(!chosen?.move) return chosen;
+    const after=position.makeMove(chosen.move);
+    if(after.status().over || !this.findMateInOne(after)) return chosen;
+
+    this.rootMateRejects++;
+    const excluded=new Set(options.excludeMoves||[]);
+    const safeLines=(lines||[]).filter(line=>{
+      if(!line.move || excluded.has(moveToUci(line.move))) return false;
+      const next=position.makeMove(line.move);
+      return next.status().over || !this.findMateInOne(next);
+    }).sort((a,b)=>b.score-a.score);
+    if(safeLines.length) {
+      const fallback={bestMove:safeLines[0].move,score:safeLines[0].score,pv:safeLines[0].pv};
+      return this.personalitySelect(position,safeLines,fallback);
+    }
+
+    // This path is rare and intentionally simple: if the timed root search did
+    // not reach a safe alternative, choose the safest legal continuation rather
+    // than knowingly play mate-in-one. Tactical truth outranks the clock.
+    const safe=[];
+    for(const move of position.legalMoves()) {
+      if(excluded.has(moveToUci(move))) continue;
+      const next=position.makeMove(move);
+      if(next.status().over || !this.findMateInOne(next)) safe.push({move,score:evaluate(next,position.turn),pv:[move],personality:0,exact:true,see:this.see(position,move)});
+    }
+    if(!safe.length) return chosen;
+    safe.sort((a,b)=>b.score-a.score);
+    return {move:safe[0].move,score:safe[0].score,objectiveScore:safe[0].score,pv:safe[0].pv};
+  }
+
   searchRoot(position, depth, options={}) {
     const excluded=new Set(options.excludeMoves||[]);
     const forcedMate=this.findMateInOne(position);
@@ -108,17 +138,8 @@ export class SearchEngine {
       return {bestMove:forcedMate,score:line.score,pv:line.pv,lines:[line],complete:true};
     }
 
-    let moves=this.orderMoves(position,position.legalMoves(),0,null).filter(move=>!excluded.has(moveToUci(move)));
+    const moves=this.orderMoves(position,position.legalMoves(),0,null).filter(move=>!excluded.has(moveToUci(move)));
     if(!moves.length) return {bestMove:null,score:evaluate(position,position.turn),pv:[],lines:[],complete:true};
-
-    // Tactical safety is hierarchical: if at least one move survives the next
-    // move without being mated, moves that allow mate-in-one are not candidates.
-    const safety=moves.map(move=>({move,mateLoss:Boolean(this.findMateInOne(position.makeMove(move)))}));
-    const safe=safety.filter(x=>!x.mateLoss).map(x=>x.move);
-    if(safe.length) {
-      this.rootMateRejects += safety.length-safe.length;
-      moves=safe;
-    }
 
     const lines=[];
     let rootAlpha=-INF;
@@ -129,8 +150,6 @@ export class SearchEngine {
       const see=this.see(position,move);
       const check=next.isInCheck(next.turn);
       const riskySacrifice=see<=-70;
-      // Quiescence already resolves immediate recaptures. Extra verification is
-      // added from depth 2 onward, where it can establish real compensation.
       const extension=depth>=2 && (riskySacrifice || move.promotion || isAdvancedPawnPush(position,move)) ? 1 : 0;
       const childDepth=Math.max(0,depth-1+extension);
       let pv=[];
@@ -276,8 +295,6 @@ export class SearchEngine {
     else {
       moves=legal.filter(move=>{
         if((move.flags & FLAGS.CAPTURE) || move.promotion) return true;
-        // Quiet checks are vital at the horizon, but recursively following every
-        // possible checking move for six plies is needlessly explosive.
         if(qDepth>=2) return false;
         const next=position.makeMove(move);
         return next.isInCheck(next.turn);
@@ -308,17 +325,12 @@ export class SearchEngine {
       const next=position.makeMove(m);
       if(next.isInCheck(next.turn)) s+=52000;
       if(m.promotion) {
-        // A promotion is exactly where “new queen” can be an illusion, so it
-        // always receives a legal exchange calculation.
         const see=this.see(position,m);
         s+=36000+(PIECE_VALUES[m.promotion]||0)*3+see*8;
       }
       if(m.flags & FLAGS.CAPTURE) {
         const victim=PIECE_VALUES[typeOf(m.captured)]||0;
         const attacker=PIECE_VALUES[typeOf(m.piece)]||0;
-        // Full recursive SEE is expensive in this array-based engine. Use it for
-        // suspicious captures while obvious equal/favorable captures keep a cheap
-        // ordering proxy. Root search and qsearch still SEE-verify before trust.
         const exchangeRisk=victim<attacker;
         const see=exchangeRisk?this.see(position,m):Math.min(victim,attacker);
         s+=22000+victim*3+see*18-attacker;
@@ -338,9 +350,6 @@ export class SearchEngine {
     const bestScore=objectiveBest.score;
     if(Math.abs(bestScore)>=MATE_SCORE-1000) return {move:objectiveBest.move,score:bestScore,objectiveScore:bestScore,pv:objectiveBest.pv};
 
-    // King safety is a hierarchy, not a style preference. While Vanta's king is
-    // in a critically constrained tactical zone, personality cannot trade a
-    // safer objective line for activity. Aggression resumes once danger clears.
     if(position.isInCheck() || kingSafetyCritical(position,position.turn)) {
       return {move:objectiveBest.move,score:objectiveBest.score,objectiveScore:objectiveBest.score,pv:objectiveBest.pv};
     }
