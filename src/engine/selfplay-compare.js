@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ChessGame } from '../chess/game.js';
-import { WHITE, BLACK, opposite } from '../chess/constants.js';
+import { WHITE, BLACK } from '../chess/constants.js';
 import { moveToUci } from '../chess/position.js';
 import { SearchEngine as CurrentSearch } from './search.js';
 import { staticExchangeEval, mateInOneMove } from './tactical.js';
@@ -42,11 +42,20 @@ function resultPoint(result,revisedColor) {
 
 function safeUci(move){return move?moveToUci(move):null;}
 
+function hasMateSafeAlternative(position) {
+  for(const move of position.legalMoves()) {
+    const next=position.makeMove(move);
+    if(next.status().over) return true;
+    if(!mateInOneMove(next)) return true;
+  }
+  return false;
+}
+
 async function play(opening,revisedColor) {
   const game=openingGame(opening);
   const metrics={
-    revised:{moves:0,nodes:0,timeMs:0,depth:0,negativeSee:0,severeSee:0,missedMate1:0,allowedMate1:0},
-    legacy:{moves:0,nodes:0,timeMs:0,depth:0,negativeSee:0,severeSee:0,missedMate1:0,allowedMate1:0},
+    revised:{moves:0,nodes:0,timeMs:0,depth:0,negativeSee:0,severeSee:0,missedMate1:0,allowedMate1:0,avoidableMate1Blunder:0},
+    legacy:{moves:0,nodes:0,timeMs:0,depth:0,negativeSee:0,severeSee:0,missedMate1:0,allowedMate1:0,avoidableMate1Blunder:0},
   };
   const moves=[...opening.moves];
   let plies=0;
@@ -58,6 +67,7 @@ async function play(opening,revisedColor) {
     const Search=revisedTurn?CurrentSearch:LegacySearch;
     const bucket=revisedTurn?metrics.revised:metrics.legacy;
     const forcedMate=mateInOneMove(position);
+    const safeAlternative=hasMateSafeAlternative(position);
     const engine=freshEngine(Search);
     const result=engine.search(position,{moveTimeMs:MOVE_MS,maxDepth:5});
     const move=result.move;
@@ -73,7 +83,9 @@ async function play(opening,revisedColor) {
     if(forcedMate && position.makeMove(move).status().reason!=='checkmate') bucket.missedMate1++;
 
     const next=position.makeMove(move);
-    if(next.status().over===false && mateInOneMove(next)) bucket.allowedMate1++;
+    const exposedMate=next.status().over===false && Boolean(mateInOneMove(next));
+    if(exposedMate) bucket.allowedMate1++;
+    if(exposedMate && safeAlternative) bucket.avoidableMate1Blunder++;
     game.play(move);
     moves.push(safeUci(move));
     plies++;
@@ -98,7 +110,7 @@ for(const opening of OPENINGS) {
 }
 
 function aggregate(side) {
-  const out={moves:0,nodes:0,timeMs:0,depth:0,negativeSee:0,severeSee:0,missedMate1:0,allowedMate1:0};
+  const out={moves:0,nodes:0,timeMs:0,depth:0,negativeSee:0,severeSee:0,missedMate1:0,allowedMate1:0,avoidableMate1Blunder:0};
   for(const g of games) for(const k of Object.keys(out)) out[k]+=g.metrics[side][k];
   return {
     ...out,
