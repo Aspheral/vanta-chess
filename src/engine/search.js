@@ -56,6 +56,8 @@ export class SearchEngine {
       if(result.lines.length && (!best || result.complete)) {
         best=result; rootLines=result.lines;
         if(result.complete) completedDepth=depth;
+      } else if(!best && result.lines.length) {
+        best=result; rootLines=result.lines;
       }
       if(!result.complete || this.timeUp()) break;
       if(Math.abs(result.score)>=MATE_SCORE-1000) break;
@@ -71,7 +73,11 @@ export class SearchEngine {
       else best={bestMove:null,score:evaluate(position,position.turn),pv:[],lines:[]};
     }
 
-    const chosen=this.personalitySelect(position, rootLines.length?rootLines:best.lines || [], best);
+    // Never let personality choose from an incomplete first iteration. At that
+    // point the objective comparison is already uncertain enough.
+    const chosen=completedDepth===0
+      ? {move:best.bestMove,score:best.score,objectiveScore:best.score,pv:best.pv}
+      : this.personalitySelect(position, rootLines.length?rootLines:best.lines || [], best);
     return {
       move: chosen.move || best.bestMove,
       score: chosen.score ?? best.score,
@@ -103,8 +109,6 @@ export class SearchEngine {
     let moves=this.orderMoves(position,position.legalMoves(),0,null).filter(move=>!excluded.has(moveToUci(move)));
     if(!moves.length) return {bestMove:null,score:evaluate(position,position.turn),pv:[],lines:[],complete:true};
 
-    // Tactical safety is hierarchical: if at least one move survives the next
-    // move without being mated, moves that allow mate-in-one are not candidates.
     const safety=moves.map(move=>({move,mateLoss:Boolean(this.findMateInOne(position.makeMove(move)))}));
     const safe=safety.filter(x=>!x.mateLoss).map(x=>x.move);
     if(safe.length) {
@@ -121,7 +125,9 @@ export class SearchEngine {
       const see=this.see(position,move);
       const check=next.isInCheck(next.turn);
       const riskySacrifice=see<=-70;
-      const extension=(riskySacrifice || move.promotion || isAdvancedPawnPush(position,move))?1:0;
+      // Quiescence already resolves immediate recaptures. Extra verification is
+      // added from depth 2 onward, where it can establish real compensation.
+      const extension=depth>=2 && (riskySacrifice || move.promotion || isAdvancedPawnPush(position,move)) ? 1 : 0;
       const childDepth=Math.max(0,depth-1+extension);
       let pv=[];
       let score;
@@ -150,9 +156,9 @@ export class SearchEngine {
       const threshold=provisionalBest.score-exactWindow;
       for(const line of lines) {
         if(this.timeUp()) break;
-        if(line.exact || line.score<threshold) continue; // fail-low upper bound is already too poor.
+        if(line.exact || line.score<threshold) continue;
         const next=position.makeMove(line.move);
-        const extension=(line.see<=-70 || line.promotion || isAdvancedPawnPush(position,line.move))?1:0;
+        const extension=depth>=2 && (line.see<=-70 || line.promotion || isAdvancedPawnPush(position,line.move)) ? 1 : 0;
         const pv=[];
         line.score=-this.negamax(next,Math.max(0,depth-1+extension),-INF,INF,1,pv,[position.hash],4);
         line.pv=[line.move,...pv]; line.exact=true;
@@ -259,15 +265,18 @@ export class SearchEngine {
       if(stand>=beta) return beta;
       if(stand>alpha) alpha=stand;
     }
-    if((qDepth>=6 && !inCheck) || qDepth>=10) return alpha;
+    if((qDepth>=5 && !inCheck) || qDepth>=9) return alpha;
 
     let moves;
     if(inCheck) moves=legal;
     else {
       moves=legal.filter(move=>{
         if((move.flags & FLAGS.CAPTURE) || move.promotion) return true;
+        // Quiet checks are vital at the horizon, but recursively following every
+        // possible checking move for six plies is needlessly explosive.
+        if(qDepth>=2) return false;
         const next=position.makeMove(move);
-        return next.isInCheck(next.turn); // quiet checks, including quiet mating moves.
+        return next.isInCheck(next.turn);
       });
     }
     moves=this.orderMoves(position,moves,ply,null);
@@ -321,8 +330,6 @@ export class SearchEngine {
     const scored=eligible.map(l=>{
       const deterministicNoise=this.config.evalNoise ? pseudoNoise(position.hash,l.move,this.config.evalNoise) : 0;
       let personality=l.personality||0;
-      // Negative SEE is not forbidden. It simply has to be justified by the
-      // objective search instead of winning the personality contest by itself.
       if((l.see??0)<=-70) personality=Math.min(personality,l.check||l.promotion?28:8);
       const composite=l.score+personality+deterministicNoise;
       return {...l,composite};
