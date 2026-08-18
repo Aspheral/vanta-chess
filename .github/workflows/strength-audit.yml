@@ -61,3 +61,33 @@ jobs:
         with:
           name: vanta-selfplay-audit
           path: selfplay-comparison.log
+
+  stockfish-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: legacy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Stockfish adjudicator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y stockfish
+      - name: Measure move quality with Stockfish
+        env:
+          LEGACY_ROOT: legacy
+          STOCKFISH_BIN: /usr/games/stockfish
+          QUALITY_MOVE_MS: '140'
+          QUALITY_SF_MS: '35'
+          QUALITY_MAX_PLIES: '90'
+        run: node src/engine/stockfish-quality.js | tee stockfish-quality.log
+      - name: Upload Stockfish quality report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vanta-stockfish-quality
+          path: stockfish-quality.log
