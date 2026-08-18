@@ -2,7 +2,7 @@ import { FLAGS, Position, moveToUci } from './position.js';
 import { moveToSAN } from './san.js';
 import { indexToSquare } from './constants.js';
 
-function repetitionKey(position) {
+export function repetitionKey(position) {
   const [board, turn, castling, ep] = position.toFEN().split(' ');
   // Under FIDE repetition rules, an en-passant target only changes the position
   // identity when an en-passant capture is actually legal.
@@ -54,6 +54,19 @@ export class ChessGame {
   repetitionCount(position = this.position) {
     const key = repetitionKey(position);
     return this.timeline.slice(0, this.cursor + 1).filter(x => repetitionKey(x.position) === key).length;
+  }
+
+  wouldCauseThreefold(move) {
+    if (!move) return false;
+    const legal = this.position.legalMoves().find(m => m.from === move.from && m.to === move.to && (m.promotion || null) === (move.promotion || null));
+    if (!legal) return false;
+    // repetitionCount() examines the existing timeline. If the resulting position
+    // has already appeared twice, making this move would create occurrence #3.
+    return this.repetitionCount(this.position.makeMove(legal)) >= 2;
+  }
+
+  repetitionDrawMoves() {
+    return this.position.legalMoves().filter(move => this.wouldCauseThreefold(move));
   }
 
   status() { return this.position.status(this.repetitionCount()); }
