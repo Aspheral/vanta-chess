@@ -1,7 +1,6 @@
 import { colorOf, indexToSquare } from '../chess/constants.js';
 import { renderArrowLayer } from './arrows.js';
-
-const GLYPHS={K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
+import { pieceName, pieceSvg } from './pieces.js';
 
 export class BoardView {
   constructor(root,{onMoveRequest,onEditorSquare}={}) {
@@ -24,7 +23,7 @@ export class BoardView {
     for(const m of legalSelected) legalTargets.set(m.to,m);
     const lastFrom=this.options.lastMove?.from?this.squareIndex(this.options.lastMove.from):null;
     const lastTo=this.options.lastMove?.to?this.squareIndex(this.options.lastMove.to):null;
-    let html='<div class="board-shell"><div class="board-grid">';
+    let html='<div class="board-shell"><div class="board-grid" role="grid" aria-label="Chess board">';
     for(const index of order) {
       const p=position.board[index];
       const row=Math.floor(index/8),col=index%8;
@@ -37,8 +36,8 @@ export class BoardView {
       const square=indexToSquare(index);
       const labelFile=(this.options.orientation==='w'?row===7:row===0)?square[0]:'';
       const labelRank=(this.options.orientation==='w'?col===0:col===7)?square[1]:'';
-      html+=`<button class="${classes.join(' ')}" data-index="${index}" aria-label="${square}${p?' '+p:''}">`;
-      if(p) html+=`<span class="piece ${colorOf(p)==='w'?'white-piece':'black-piece'}" draggable="${this.options.interactive&&!this.options.editing?'true':'false'}" data-from="${index}">${GLYPHS[p]}</span>`;
+      html+=`<button class="${classes.join(' ')}" data-index="${index}" role="gridcell" aria-label="${square}${p?' '+pieceName(p):''}">`;
+      if(p) html+=`<span class="piece ${colorOf(p)==='w'?'white-piece':'black-piece'}" draggable="${this.options.interactive&&!this.options.editing?'true':'false'}" data-from="${index}">${pieceSvg(p)}</span>`;
       if(labelFile) html+=`<span class="coord file">${labelFile}</span>`;
       if(labelRank) html+=`<span class="coord rank">${labelRank}</span>`;
       html+='</button>';
@@ -51,12 +50,13 @@ export class BoardView {
   }
 
   squareIndex(square) {
-    const file='abcdefgh'.indexOf(square[0]); return (8-Number(square[1]))*8+file;
+    const file='abcdefgh'.indexOf(square[0]);
+    return (8-Number(square[1]))*8+file;
   }
 
   bind() {
     this.root.querySelectorAll('.square').forEach(el=>{
-      el.addEventListener('click',e=>this.handleSquare(Number(el.dataset.index)));
+      el.addEventListener('click',()=>this.handleSquare(Number(el.dataset.index)));
       el.addEventListener('dragover',e=>{ if(this.options.interactive) e.preventDefault(); });
       el.addEventListener('drop',e=>{
         e.preventDefault();
@@ -70,8 +70,12 @@ export class BoardView {
         this.dragFrom=Number(piece.dataset.from);
         e.dataTransfer.setData('text/plain',String(this.dragFrom));
         e.dataTransfer.effectAllowed='move';
+        piece.classList.add('dragging');
       });
-      piece.addEventListener('dragend',()=>{this.dragFrom=null;});
+      piece.addEventListener('dragend',()=>{
+        piece.classList.remove('dragging');
+        this.dragFrom=null;
+      });
     });
   }
 
@@ -86,7 +90,10 @@ export class BoardView {
     if(index===this.selected) { this.selected=null; this.render(this.position,this.options); return; }
     const legal=this.position.legalMoves().filter(m=>m.from===this.selected&&m.to===index);
     if(legal.length) {
-      const from=this.selected; this.selected=null; this.onMoveRequest?.(from,index,legal); return;
+      const from=this.selected;
+      this.selected=null;
+      this.onMoveRequest?.(from,index,legal);
+      return;
     }
     if(p&&colorOf(p)===this.position.turn) { this.selected=index; this.render(this.position,this.options); }
     else { this.selected=null; this.render(this.position,this.options); }
