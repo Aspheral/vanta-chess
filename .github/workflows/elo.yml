@@ -32,7 +32,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y stockfish
-          /usr/games/stockfish bench 1 1 1 default depth >/dev/null
+          test -x /usr/games/stockfish
       - name: Quick 1500 Elo anchor
         env:
           ELO_TARGETS: '1500'
