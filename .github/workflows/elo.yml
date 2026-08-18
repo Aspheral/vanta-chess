@@ -8,8 +8,12 @@ on:
       - '.github/workflows/elo.yml'
   workflow_dispatch:
 
+concurrency:
+  group: vanta-elo-calibration
+  cancel-in-progress: true
+
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   calibrate:
@@ -19,7 +23,7 @@ jobs:
       ELO_TARGETS: '1320,1450,1600,1750'
       MOVE_TIME_MS: '350'
       MAX_PLIES: '140'
-      ELO_REPORT: 'benchmarks/elo-ci.json'
+      ELO_REPORT: 'benchmarks/elo-latest.json'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,5 +40,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vanta-elo-report
-          path: benchmarks/elo-ci.json
+          path: benchmarks/elo-latest.json
           if-no-files-found: error
+      - name: Commit calibration snapshot
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add benchmarks/elo-latest.json
+          git commit -m 'Record Elo calibration snapshot' || exit 0
+          git push
