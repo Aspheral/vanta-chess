@@ -6,10 +6,11 @@ on:
     paths:
       - 'src/engine/elo-match.js'
       - '.github/workflows/elo.yml'
+  pull_request:
   workflow_dispatch:
 
 concurrency:
-  group: vanta-elo-calibration
+  group: vanta-elo-calibration-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -38,6 +39,7 @@ jobs:
           ELO_REPORT: 'benchmarks/elo-quick.json'
         run: node src/engine/elo-match.js
       - name: Publish quick anchor
+        if: github.event_name == 'push'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -58,6 +60,7 @@ jobs:
             benchmarks/elo-latest.json
           if-no-files-found: error
       - name: Publish full calibration
+        if: github.event_name == 'push'
         run: |
           git add benchmarks/elo-latest.json
           git commit -m 'Record full Elo calibration' || true
