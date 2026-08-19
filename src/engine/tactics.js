@@ -114,7 +114,7 @@ export function promotionPressure(position, color = null) {
     const distance = pc === WHITE ? row : 7 - row;
     if (distance <= 1) score += 28;
     else if (distance === 2) score += 18;
-    else if (distance === 3) score += 10;
+    else if (distance === 3) score += 18;
   }
   return score;
 }
