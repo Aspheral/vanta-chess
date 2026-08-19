@@ -10,7 +10,7 @@ const cases = [
   { id: 'A-before-9-Nd5', fen: positionBeforeSan(parsed, 'Nd5'), suspect: 'c3d5' },
   { id: 'B-after-9-Nxe4', fen: positionAfterSan(parsed, 'Nxe4', 1), suspect: 'g5e4' },
   { id: 'C-before-17-Ne6', fen: positionBeforeSan(parsed, 'Ne6'), suspect: 'g5e6' },
-  { id: 'D-before-28-f3', fen: positionBeforeSan(parsed, 'f3', 1), suspect: null },
+  { id: 'D-before-28-f3', fen: positionBeforeSan(parsed, 'f3', 2), suspect: null },
   { id: 'E-after-30-f2-check', fen: positionAfterSan(parsed, 'f2+'), suspect: null },
   { id: 'F-before-51-a3', fen: positionBeforeSan(parsed, 'a3', 1), suspect: null },
 ];
