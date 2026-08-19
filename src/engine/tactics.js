@@ -1,7 +1,7 @@
 import { FLAGS } from '../chess/position.js';
 import {
   WHITE, BLACK, PIECE_VALUES, colorOf, typeOf, rowCol, opposite,
-  KNIGHT_DELTAS, KING_DELTAS, BISHOP_DIRS, ROOK_DIRS, QUEEN_DIRS, inBounds,
+  KNIGHT_DELTAS,
 } from '../chess/constants.js';
 
 function pieceValue(piece) { return PIECE_VALUES[typeOf(piece)] || 0; }
@@ -103,6 +103,22 @@ export function hasNearPromotion(position, color = null) {
   return false;
 }
 
+export function promotionPressure(position, color = null) {
+  let score = 0;
+  for (let sq = 0; sq < 64; sq++) {
+    const piece = position.board[sq];
+    if (!piece || typeOf(piece) !== 'p') continue;
+    const pc = colorOf(piece);
+    if (color && pc !== color) continue;
+    const [row] = rowCol(sq);
+    const distance = pc === WHITE ? row : 7 - row;
+    if (distance <= 1) score += 28;
+    else if (distance === 2) score += 18;
+    else if (distance === 3) score += 10;
+  }
+  return score;
+}
+
 export function looseHighValueCount(position, color) {
   let count = 0;
   const enemy = opposite(color);
@@ -134,7 +150,7 @@ export function tacticalVolatility(position) {
     if (score >= 100) return 100;
   }
 
-  if (hasNearPromotion(position)) score += 20;
+  score += Math.min(32, promotionPressure(position));
   score += Math.min(18, (looseHighValueCount(position, WHITE) + looseHighValueCount(position, BLACK)) * 6);
   if (checks >= 3) score += 8;
   if (promotions) score += Math.min(16, promotions * 4);
@@ -147,6 +163,6 @@ export function isTacticallyQuietMove(position, move, next = null) {
   if (move.promotion) return false;
   const child = next || position.makeMove(move);
   if (child.isInCheck()) return false;
-  if (hasNearPromotion(position) || hasNearPromotion(child)) return false;
+  if (promotionPressure(position) >= 18 || promotionPressure(child) >= 18) return false;
   return true;
 }
