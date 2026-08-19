@@ -24,7 +24,7 @@ test('hard cancellation terminates worker and stale search result is ignored', (
   assert.equal(delivered,0);
 });
 
-test('ponder cache is position-specific, counts hit/miss, and survives refinement start', () => {
+test('ponder cache is position-specific, counts hit/miss, survives refinement, and never auto-plays a shallow reply', () => {
   FakeWorker.instances.length=0;
   const controller=new EngineController('worker.js');
   const fen='position-a';
@@ -38,7 +38,10 @@ test('ponder cache is position-specific, counts hit/miss, and survives refinemen
   const refineId=controller.refinePonder(fen,3,{depth:5});
   assert.ok(refineId);
   assert.equal(controller.ponderCache.has('e2e4'),true,'completed cache remains available during refinement');
-  assert.equal(controller.consumePonder('e2e4',fen)?.engineMove,'e7e5');
+  const hit=controller.consumePonder('e2e4',fen);
+  assert.equal(hit?.engineMove,null,'cached response may not be committed without normal validation');
+  assert.equal(hit?.suggestedMove,'e7e5');
+  assert.equal(hit?.requiresValidation,true);
   assert.equal(controller.getPonderStats().hits,1);
 
   const id3=controller.ponder(fen,3,{});
