@@ -1,0 +1,42 @@
+name: Vanta Stockfish Suite
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/engine/**'
+      - 'src/chess/**'
+      - 'tests/fixtures/vanta-vs-1266.pgn'
+      - 'scripts/stockfish-suite-compare.js'
+      - '.github/workflows/stockfish-suite.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUITE_MOVE_MS: '650'
+      SUITE_SF_DEPTH: '11'
+      SUITE_REPORT: 'benchmarks/stockfish-suite-compare.json'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Stockfish
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y stockfish
+          test -x /usr/games/stockfish
+      - name: Run before and after suite
+        run: node scripts/stockfish-suite-compare.js
+      - name: Upload suite report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vanta-stockfish-suite
+          path: benchmarks/stockfish-suite-compare.json
+          if-no-files-found: error

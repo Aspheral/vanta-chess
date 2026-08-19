@@ -5,8 +5,12 @@ import { access } from 'node:fs/promises';
 import { ChessGame } from '../chess/game.js';
 import { WHITE, BLACK } from '../chess/constants.js';
 import { moveToUci } from '../chess/position.js';
-import { SearchEngine } from './search.js';
 import { repetitionExclusions } from './draw-policy.js';
+
+const ENGINE_VARIANT = process.env.VANTA_ENGINE === 'legacy' ? 'legacy' : 'repaired';
+const { SearchEngine } = ENGINE_VARIANT === 'legacy'
+  ? await import('./search.js')
+  : await import('./search-production.js');
 
 const MOVE_TIME_MS = Number(process.env.MOVE_TIME_MS || 650);
 const MAX_PLIES = Number(process.env.MAX_PLIES || 160);
@@ -113,6 +117,7 @@ function vantaMove(game) {
   const run = excludeMoves => new SearchEngine().search(game.position, {
     moveTimeMs: MOVE_TIME_MS,
     maxDepth: 6,
+    maxMoveTimeMs: ENGINE_VARIANT === 'repaired' ? Math.max(MOVE_TIME_MS, 1800) : undefined,
     excludeMoves,
   });
   let result = run([]);
@@ -231,6 +236,7 @@ async function main() {
     const stockfishInfo = await stockfish.init();
     const targets = [...new Set(TARGETS.filter(x => x >= stockfishInfo.minElo && x <= stockfishInfo.maxElo))];
     if (!targets.length) targets.push(stockfishInfo.minElo);
+    console.log(`Vanta engine variant: ${ENGINE_VARIANT}`);
     console.log(`Reference engine: ${stockfishInfo.id}`);
     console.log(`UCI_Elo range: ${stockfishInfo.minElo}-${stockfishInfo.maxElo}`);
     console.log(`Targets: ${targets.join(', ')}, ${MOVE_TIME_MS} ms/move, ${OPENINGS.length * 2} games/target`);
@@ -253,6 +259,7 @@ async function main() {
     const summary = summarize(games);
     const report = {
       generatedAt: new Date().toISOString(),
+      engineVariant: ENGINE_VARIANT,
       methodology: {
         reference: stockfishInfo,
         equalMoveTimeMs: MOVE_TIME_MS,

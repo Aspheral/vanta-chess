@@ -1,4 +1,4 @@
-const CACHE='vanta-chess-v6';
+const CACHE='vanta-chess-v7';
 const SHELL=[
   './',
   './index.html',
@@ -15,8 +15,12 @@ const SHELL=[
   './src/engine/controller.js',
   './src/engine/draw-policy.js',
   './src/engine/evaluation.js',
+  './src/engine/evaluation-v2.js',
   './src/engine/personality.js',
   './src/engine/search.js',
+  './src/engine/search-v2.js',
+  './src/engine/search-production.js',
+  './src/engine/tactics.js',
   './src/engine/worker.js',
   './src/ui/arrows.js',
   './src/ui/audio.js',

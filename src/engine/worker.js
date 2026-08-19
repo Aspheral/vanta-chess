@@ -1,5 +1,5 @@
 import { Position, moveToUci } from '../chess/position.js';
-import { SearchEngine } from './search.js';
+import { SearchEngine } from './search-production.js';
 
 let activeSearchId=0;
 let engine=new SearchEngine();

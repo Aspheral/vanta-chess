@@ -73,7 +73,14 @@ export class EngineController extends EventTarget {
     const branch=this.ponderCache.get(opponentUci)||null;
     if(branch) this.ponderHits++; else this.ponderMisses++;
     this.ponderCache.clear(); this.ponderFen=null;
-    return branch;
+    if(!branch) return null;
+
+    // A ponder branch is deliberately advisory only. Historically Vanta played
+    // a cached response immediately, even when that response came from ~55-70ms
+    // of shallow branch search. In rapid chess that turned prediction into a
+    // strength limiter. Preserve the branch for UI/debug metadata, but force the
+    // normal search path to validate the move before it can be played.
+    return {...branch,suggestedMove:branch.engineMove,engineMove:null,requiresValidation:true};
   }
 
   getPonderStats() { return {hits:this.ponderHits,misses:this.ponderMisses}; }
