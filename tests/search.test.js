@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Position, moveToUci } from '../src/chess/position.js';
-import { SearchEngine } from '../src/engine/search-v2.js';
+import { SearchEngine } from '../src/engine/search-production.js';
 
 test('engine finds mate in one',()=>{
   const p=Position.fromFEN('6k1/8/6KQ/8/8/8/8/8 w - - 0 1');
