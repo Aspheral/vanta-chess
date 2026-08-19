@@ -1,11 +1,9 @@
 import { evaluate as baseEvaluate, personalityMoveBonus as basePersonalityMoveBonus, MATE_SCORE } from './evaluation.js';
-import { staticExchangeEval, moveGivesCheck } from './tactics.js';
-import { WHITE, BLACK, PIECE_VALUES, colorOf, typeOf, opposite, rowCol, inBounds, KING_DELTAS } from '../chess/constants.js';
+import { staticExchangeEval } from './tactics.js';
+import { WHITE, PIECE_VALUES, colorOf, typeOf, opposite, rowCol, inBounds } from '../chess/constants.js';
 import { FLAGS } from '../chess/position.js';
 
 export { MATE_SCORE };
-
-function signed(color, perspective) { return color === perspective ? 1 : -1; }
 
 function homeMinorSquares(color) {
   return color === WHITE
@@ -35,8 +33,7 @@ function openingDevelopmentFor(position, color) {
   const castled = color === WHITE ? [62, 58].includes(king) : [6, 2].includes(king);
   if (castled) score += 38;
   else if (king === homeKing) {
-    const hasRights = rights.some(r => position.castling.includes(r));
-    if (hasRights) score += 9;
+    if (rights.some(r => position.castling.includes(r))) score += 9;
     if (position.fullmove >= 8 && undeveloped <= 2) score -= 8;
   } else if (position.fullmove <= 12) score -= 24;
 
@@ -53,7 +50,6 @@ function openingDevelopmentFor(position, color) {
     }
   }
 
-  // Reward actually opening castling lanes, not merely shuffling developed pieces.
   if (color === WHITE) {
     if (!position.board[61]) score += 8;
     if (!position.board[62]) score += 8;
@@ -64,25 +60,16 @@ function openingDevelopmentFor(position, color) {
   return score;
 }
 
+// The base evaluator already builds a full attack map, counts safe king exits,
+// rays, shield integrity, nearby attackers, and loose pieces. This extra term is
+// intentionally cheap: it supplies the requested nonlinear accumulation without
+// rebuilding attack maps a second time at every leaf.
 function kingDanger(position, color) {
   const king = position.kingSquare(color);
   if (king < 0) return 1000;
   const enemy = opposite(color);
   const [kr, kc] = rowCol(king);
   let danger = 0;
-  let attackedRing = 0, safeRing = 0;
-
-  for (const [dr, dc] of KING_DELTAS) {
-    const rr = kr + dr, cc = kc + dc;
-    if (!inBounds(rr, cc)) continue;
-    const sq = rr * 8 + cc;
-    const own = position.board[sq] && colorOf(position.board[sq]) === color;
-    if (own) continue;
-    if (position.isSquareAttacked(sq, enemy)) attackedRing++;
-    else safeRing++;
-  }
-  danger += attackedRing * 9;
-  if (safeRing <= 1) danger += 20;
 
   const forward = color === WHITE ? -1 : 1;
   let shield = 0;
@@ -92,8 +79,9 @@ function kingDanger(position, color) {
     const piece = position.board[rr * 8 + cc];
     if (piece && colorOf(piece) === color && typeOf(piece) === 'p') shield++;
   }
-  danger += (3 - shield) * 7;
+  danger += (3 - shield) * 8;
 
+  let nearbyAttackers = 0;
   for (let sq = 0; sq < 64; sq++) {
     const piece = position.board[sq];
     if (!piece || colorOf(piece) !== enemy || typeOf(piece) === 'k') continue;
@@ -101,10 +89,10 @@ function kingDanger(position, color) {
     const distance = Math.max(Math.abs(r - kr), Math.abs(c - kc));
     if (distance > 4) continue;
     const weight = typeOf(piece) === 'q' ? 7 : typeOf(piece) === 'r' ? 5 : ['b', 'n'].includes(typeOf(piece)) ? 3 : 1;
-    danger += Math.max(0, 5 - distance) * weight;
+    nearbyAttackers += Math.max(0, 5 - distance) * weight;
   }
+  danger += nearbyAttackers;
 
-  // Open/semi-open files adjacent to the king become dangerous very quickly with rooks/queen present.
   for (const file of [kc - 1, kc, kc + 1]) {
     if (file < 0 || file > 7) continue;
     let ownPawn = false, enemyHeavy = false;
@@ -114,15 +102,15 @@ function kingDanger(position, color) {
       if (colorOf(p) === color && typeOf(p) === 'p') ownPawn = true;
       if (colorOf(p) === enemy && ['q', 'r'].includes(typeOf(p))) enemyHeavy = true;
     }
-    if (!ownPawn) danger += enemyHeavy ? 14 : 7;
+    if (!ownPawn) danger += enemyHeavy ? 14 : 6;
   }
 
-  if (position.isSquareAttacked(king, enemy)) danger += 26;
   const homeKing = color === WHITE ? 60 : 4;
-  if (position.fullmove <= 14 && king === homeKing && undevelopedMinorCount(position, color) >= 2) danger += 8;
+  if (position.fullmove <= 14 && king === homeKing && undevelopedMinorCount(position, color) >= 2) danger += 10;
+  const castled = color === WHITE ? [62, 58].includes(king) : [6, 2].includes(king);
+  if (!castled && position.fullmove >= 12) danger += 8;
 
-  // Nonlinear accumulation: several modest defects together are much worse than one.
-  return Math.round(danger + (danger * danger) / 38);
+  return Math.round(danger + (danger * danger) / 55);
 }
 
 function isPassed(position, sq, color) {
@@ -140,8 +128,7 @@ function isPassed(position, sq, color) {
 
 function passedPawnUrgencyFor(position, color) {
   const pawn = color === WHITE ? 'P' : 'p';
-  const enemy = opposite(color);
-  const distanceBonus = [0, 280, 145, 78, 42, 24, 12, 0];
+  const distanceBonus = [0, 300, 155, 82, 44, 24, 12, 0];
   let total = 0;
   for (let sq = 0; sq < 64; sq++) {
     if (position.board[sq] !== pawn || !isPassed(position, sq, color)) continue;
@@ -149,37 +136,25 @@ function passedPawnUrgencyFor(position, color) {
     const distance = color === WHITE ? row : 7 - row;
     if (distance <= 0 || distance >= distanceBonus.length) continue;
     let value = distanceBonus[distance];
-    const dir = color === WHITE ? -1 : 1;
-    const frontRow = row + dir;
-    if (inBounds(frontRow, col)) {
-      const front = frontRow * 8 + col;
-      if (position.board[front]) value *= 0.48;
-      if (position.isSquareAttacked(front, color)) value *= 1.12;
-      if (position.isSquareAttacked(front, enemy)) value *= 0.82;
-    }
-    if (position.isSquareAttacked(sq, color)) value *= 1.12;
-    if (distance === 1) {
-      const promotionMoves = position.turn === color
-        ? position.legalMoves().filter(move => move.from === sq && move.promotion)
-        : [];
-      if (promotionMoves.some(move => position.makeMove(move).isInCheck())) value += 80;
-    }
+    const frontRow = row + (color === WHITE ? -1 : 1);
+    if (inBounds(frontRow, col) && position.board[frontRow * 8 + col]) value *= 0.52;
+    if (distance === 1) value += 45;
     total += value;
   }
   return Math.round(total);
 }
 
+// Base evaluation already has attack-map-based loose-piece scoring. Keep a cheap
+// public diagnostic here so regression reports can separate that class of risk.
 function loosePieceRiskFor(position, color) {
   const enemy = opposite(color);
   let risk = 0;
   for (let sq = 0; sq < 64; sq++) {
     const piece = position.board[sq];
     if (!piece || colorOf(piece) !== color || typeOf(piece) === 'k') continue;
-    if (!position.isSquareAttacked(sq, enemy)) continue;
-    const defended = position.isSquareAttacked(sq, color);
     const value = PIECE_VALUES[typeOf(piece)] || 0;
-    if (!defended) risk += Math.round(value * (value >= PIECE_VALUES.r ? 0.16 : 0.12));
-    else if (value >= PIECE_VALUES.r) risk += Math.round(value * 0.045);
+    if (value < PIECE_VALUES.r) continue;
+    if (position.isSquareAttacked(sq, enemy) && !position.isSquareAttacked(sq, color)) risk += Math.round(value * 0.12);
   }
   return risk;
 }
@@ -190,10 +165,9 @@ export function evaluate(position, perspective = position.turn) {
 
   const ownDanger = kingDanger(position, perspective);
   const enemyDanger = kingDanger(position, opposite(perspective));
-  score += Math.round((enemyDanger - ownDanger) * 0.72);
+  score += Math.round((enemyDanger - ownDanger) * 0.58);
 
   score += passedPawnUrgencyFor(position, perspective) - passedPawnUrgencyFor(position, opposite(perspective));
-  score += loosePieceRiskFor(position, opposite(perspective)) - loosePieceRiskFor(position, perspective);
   return Math.round(score);
 }
 
@@ -210,9 +184,7 @@ export function personalityMoveBonus(position, move) {
     if (['n', 'b'].includes(type) && !isHomeMinorSquare(move.from, move.piece) && undeveloped > 0 && !tactical) {
       bonus -= 18 + undeveloped * 9;
     }
-    if (['n', 'b'].includes(type) && isHomeMinorSquare(move.from, move.piece) && !isHomeMinorSquare(move.to, move.piece)) {
-      bonus += 14;
-    }
+    if (['n', 'b'].includes(type) && isHomeMinorSquare(move.from, move.piece) && !isHomeMinorSquare(move.to, move.piece)) bonus += 14;
     if (type === 'p' && undeveloped >= 2) {
       const file = move.from % 8;
       if ([0, 1, 6, 7].includes(file) && !tactical) bonus -= file >= 6 ? 18 : 11;
@@ -221,8 +193,6 @@ export function personalityMoveBonus(position, move) {
 
   const see = staticExchangeEval(position, move);
   if (see < -80 && !move.promotion) {
-    // Sacrifices are welcome only when the forcing line itself justifies them.
-    // The personality layer must never manufacture compensation search did not find.
     const scale = givesCheck ? 0.08 : 0.18;
     bonus -= Math.min(90, Math.round(-see * scale));
   }
