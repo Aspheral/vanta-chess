@@ -107,6 +107,65 @@ export class SearchEngine extends CoreSearchEngine {
     return scored.map(x => x.move);
   }
 
+  blunderGuard(position, chosen, lines, guardMs) {
+    const exact = lines.filter(line => line.exact !== false).sort((a, b) => b.score - a.score);
+    const unique = [];
+    const add = move => {
+      if (!move) return;
+      const uci = moveToUci(move);
+      if (!unique.some(row => row.uci === uci)) unique.push({ move, uci });
+    };
+    add(chosen.move);
+    for (const line of exact.slice(0, 4)) add(line.move);
+    const candidates = unique.slice(0, 3);
+    if (candidates.length < 2) return null;
+
+    const perMove = Math.max(18, Math.floor(guardMs / candidates.length));
+    const probes = [];
+    for (const candidate of candidates) {
+      const child = position.makeMove(candidate.move);
+      const probeEngine = new SearchEngine({
+        ...this.config,
+        maxDepth: 3,
+        moveTimeMs: perMove,
+        nodeLimit: 32000,
+        selectionWindow: 0,
+        evalNoise: 0,
+        enableBlunderGuard: false,
+        disableLMR: true,
+      });
+      const result = probeEngine.search(child, {
+        maxDepth: 3,
+        moveTimeMs: perMove,
+        maxMoveTimeMs: perMove,
+        criticality: 100,
+      });
+      probes.push({
+        uci: candidate.uci,
+        scoreForUs: -(result.objectiveScore ?? result.score ?? 0),
+        opponentMove: result.move ? moveToUci(result.move) : null,
+        pv: result.pv.map(moveToUci),
+        depth: result.depth,
+      });
+    }
+
+    probes.sort((a, b) => b.scoreForUs - a.scoreForUs);
+    const selectedUci = chosen.move ? moveToUci(chosen.move) : null;
+    const selectedProbe = probes.find(row => row.uci === selectedUci);
+    const bestProbe = probes[0];
+    this.guardReport = { selected: selectedUci, probes };
+    if (!selectedProbe || !bestProbe || bestProbe.uci === selectedUci) return null;
+
+    const severe = bestProbe.scoreForUs - selectedProbe.scoreForUs >= 165
+      || (selectedProbe.scoreForUs <= -MATE_SCORE + 1000 && bestProbe.scoreForUs > -MATE_SCORE + 1000);
+    if (!severe) return null;
+    const line = exact.find(row => moveToUci(row.move) === bestProbe.uci);
+    if (!line) return null;
+    this.guardReport.rejected = selectedUci;
+    this.guardReport.replacement = bestProbe.uci;
+    return { move: line.move, score: line.score, objectiveScore: line.score, pv: line.pv };
+  }
+
   predictBranches(position, count = 4, options = {}) {
     const totalMs = Math.max(120, options.timeMs ?? 280);
     const predictionDepth = Math.max(2, Math.min(5, (options.depth ?? this.config.maxDepth) - 1));
