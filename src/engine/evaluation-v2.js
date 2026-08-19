@@ -28,10 +28,6 @@ function openingDevelopmentFor(position, color) {
   const rights = color === WHITE ? ['K', 'Q'] : ['k', 'q'];
   const pawn = color === WHITE ? 'P' : 'p';
   const homePawnRow = color === WHITE ? 6 : 1;
-
-  // The base evaluator already rewards development. This layer is intentionally
-  // modest after reference testing showed that an earlier, larger bonus could
-  // bully Vanta away from tactically justified knight manoeuvres.
   let score = -undeveloped * 8;
 
   const castled = color === WHITE ? [62, 58].includes(king) : [6, 2].includes(king);
@@ -63,10 +59,6 @@ function openingDevelopmentFor(position, color) {
   return score;
 }
 
-// The base evaluator already builds a full attack map, counts safe king exits,
-// rays, shield integrity, nearby attackers, and loose pieces. This extra term is
-// intentionally cheap: it supplies nonlinear accumulation without rebuilding
-// attack maps a second time at every leaf.
 function kingDanger(position, color) {
   const king = position.kingSquare(color);
   if (king < 0) return 1000;
@@ -147,8 +139,6 @@ function passedPawnUrgencyFor(position, color) {
   return Math.round(total);
 }
 
-// Base evaluation already has attack-map-based loose-piece scoring. Keep a cheap
-// public diagnostic here so regression reports can separate that class of risk.
 function loosePieceRiskFor(position, color) {
   const enemy = opposite(color);
   let risk = 0;
@@ -164,8 +154,11 @@ function loosePieceRiskFor(position, color) {
 
 export function evaluate(position, perspective = position.turn) {
   let score = baseEvaluate(position, perspective);
-  score += openingDevelopmentFor(position, perspective) - openingDevelopmentFor(position, opposite(perspective));
 
+  // Development remains represented by the base evaluator and the root
+  // personality discipline below. Reference-engine validation showed that a
+  // second large static development term could overpower sound tactical
+  // manoeuvres, so it is diagnostic-only rather than double-counted here.
   const ownDanger = kingDanger(position, perspective);
   const enemyDanger = kingDanger(position, opposite(perspective));
   score += Math.round((enemyDanger - ownDanger) * 0.58);
