@@ -34,15 +34,12 @@ function pieceSquareActivity(position, perspective) {
       if (CENTER.has(i)) score += s * 28;
       else if (EXTENDED_CENTER.has(i)) score += s * 14;
       score += s * Math.min(18, homeDistance * 5);
-    } else if (type === 'b') {
-      score += s * Math.min(18, homeDistance * 4);
-    } else if (type === 'r') {
+    } else if (type === 'b') score += s * Math.min(18, homeDistance * 4);
+    else if (type === 'r') {
       const targetRank = color === WHITE ? 1 : 6;
       if (r === targetRank) score += s * 24;
     } else if (type === 'q') {
-      if (position.fullmove <= 10 && homeDistance > 1) {
-        score -= s * Math.min(18, (homeDistance - 1) * 6);
-      }
+      if (position.fullmove <= 10 && homeDistance > 1) score -= s * Math.min(18, (homeDistance - 1) * 6);
     } else if (type === 'p') {
       score += s * homeDistance * 5;
       if ([3, 4].includes(c)) score += s * 5;
@@ -85,12 +82,8 @@ function mobilityScore(position, perspective) {
           while (inBounds(rr, cc)) {
             const t = position.board[rr * 8 + cc];
             if (!t) mobility++;
-            else {
-              if (colorOf(t) !== color) mobility += 2;
-              break;
-            }
-            rr += dr;
-            cc += dc;
+            else { if (colorOf(t) !== color) mobility += 2; break; }
+            rr += dr; cc += dc;
           }
         }
       }
@@ -118,8 +111,7 @@ function pawnStructure(position, perspective) {
       for (const f of [c - 1, c, c + 1]) {
         if (f < 0 || f > 7) continue;
         for (let rr = r + dir; rr >= 0 && rr < 8; rr += dir) {
-          const enemyPawn = position.board[rr * 8 + f];
-          if (enemyPawn === (color === WHITE ? 'p' : 'P')) { passed = false; break; }
+          if (position.board[rr * 8 + f] === (color === WHITE ? 'p' : 'P')) { passed = false; break; }
         }
       }
       if (passed) {
@@ -145,9 +137,7 @@ function developmentScore(position, perspective) {
     const kingSq = position.kingSquare(color);
     if (homes.castles.includes(kingSq)) score += 24;
     else if (kingSq !== homes.king[0] && position.fullmove <= 11) score -= 20;
-    if (position.board[homes.queen[0]] !== homes.queen[1] && developed < 2 && position.fullmove <= 10) {
-      score -= (2 - developed) * 12;
-    }
+    if (position.board[homes.queen[0]] !== homes.queen[1] && developed < 2 && position.fullmove <= 10) score -= (2 - developed) * 12;
     total += sign * score;
   }
   return total;
@@ -180,19 +170,61 @@ function rookAndBishopStructure(position, perspective) {
   return total;
 }
 
-function loosePieceScore(position, perspective) {
+function buildAttackData(position, color) {
+  const counts = new Uint8Array(64);
+  const weights = new Uint16Array(64);
+  const add = (sq, weight) => {
+    counts[sq] = Math.min(255, counts[sq] + 1);
+    weights[sq] = Math.min(65535, weights[sq] + weight);
+  };
+  for (let from = 0; from < 64; from++) {
+    const piece = position.board[from];
+    if (!piece || colorOf(piece) !== color) continue;
+    const type = typeOf(piece);
+    const [r, c] = rowCol(from);
+    const weight = type === 'q' ? 9 : type === 'r' ? 5 : ['b','n'].includes(type) ? 3 : 1;
+    if (type === 'p') {
+      const dr = color === WHITE ? -1 : 1;
+      for (const dc of [-1, 1]) {
+        const rr = r + dr, cc = c + dc;
+        if (inBounds(rr, cc)) add(rr * 8 + cc, weight);
+      }
+    } else if (type === 'n' || type === 'k') {
+      const deltas = type === 'n' ? KNIGHT_DELTAS : KING_DELTAS;
+      for (const [dr, dc] of deltas) {
+        const rr = r + dr, cc = c + dc;
+        if (inBounds(rr, cc)) add(rr * 8 + cc, weight);
+      }
+    } else {
+      const dirs = type === 'b' ? BISHOP_DIRS : type === 'r' ? ROOK_DIRS : QUEEN_DIRS;
+      for (const [dr, dc] of dirs) {
+        let rr = r + dr, cc = c + dc;
+        while (inBounds(rr, cc)) {
+          const sq = rr * 8 + cc;
+          add(sq, weight);
+          if (position.board[sq]) break;
+          rr += dr; cc += dc;
+        }
+      }
+    }
+  }
+  return { counts, weights };
+}
+
+function buildAttackPair(position) {
+  return { [WHITE]: buildAttackData(position, WHITE), [BLACK]: buildAttackData(position, BLACK) };
+}
+
+function loosePieceScore(position, perspective, attacks) {
   let total = 0;
   for (let sq = 0; sq < 64; sq++) {
     const piece = position.board[sq];
     if (!piece || typeOf(piece) === 'k') continue;
-    const color = colorOf(piece);
-    const enemy = opposite(color);
-    if (!position.isSquareAttacked(sq, enemy)) continue;
-    const defended = position.isSquareAttacked(sq, color);
+    const color = colorOf(piece), enemy = opposite(color);
+    if (!attacks[enemy].counts[sq]) continue;
+    const defended = Boolean(attacks[color].counts[sq]);
     const value = PIECE_VALUES[typeOf(piece)] || 0;
-    let exposure;
-    if (defended) exposure = typeOf(piece) === 'q' ? 18 : typeOf(piece) === 'r' ? 12 : 7;
-    else exposure = Math.max(8, Math.round(value * 0.22));
+    const exposure = defended ? (typeOf(piece) === 'q' ? 18 : typeOf(piece) === 'r' ? 12 : 7) : Math.max(8, Math.round(value * 0.22));
     total -= signed(color, perspective) * exposure;
   }
   return total;
@@ -219,7 +251,7 @@ function rayPressure(position, kingSq, attackerColor) {
   return pressure;
 }
 
-function kingSafetyFor(position, color) {
+function kingSafetyFor(position, color, attacks) {
   const kingSq = position.kingSquare(color);
   if (kingSq < 0) return -MATE_SCORE;
   const enemy = opposite(color);
@@ -242,27 +274,28 @@ function kingSafetyFor(position, color) {
   for (const sq of adjacent) {
     const occupant = position.board[sq];
     if (occupant && colorOf(occupant) === color) continue;
-    if (position.isSquareAttacked(sq, enemy)) attackedEscapes++;
-    else safeEscapes++;
+    if (attacks[enemy].counts[sq]) attackedEscapes++; else safeEscapes++;
   }
   safety += safeEscapes * 5 - attackedEscapes * 10;
   safety -= rayPressure(position, kingSq, enemy);
   let nearbyAttackers = 0, nearbyDefenders = 0;
   for (let i = 0; i < 64; i++) {
     const p = position.board[i]; if (!p) continue;
-    const [pr, pc] = rowCol(i); const dist = Math.max(Math.abs(pr - r), Math.abs(pc - c));
+    const [pr, pc] = rowCol(i);
+    const dist = Math.max(Math.abs(pr - r), Math.abs(pc - c));
     if (dist <= 3 && typeOf(p) !== 'k') {
       if (colorOf(p) === enemy) nearbyAttackers += typeOf(p) === 'q' ? 3 : typeOf(p) === 'r' ? 2 : 1;
       else nearbyDefenders += typeOf(p) === 'q' ? 2 : 1;
     }
   }
   safety += nearbyDefenders * 3 - nearbyAttackers * 7;
-  if (position.isSquareAttacked(kingSq, enemy)) safety -= 45;
+  if (attacks[enemy].counts[kingSq]) safety -= 45;
   return safety;
 }
 
 function squareName(index) {
-  const files = 'abcdefgh'; const row = Math.floor(index / 8), col = index % 8;
+  const files = 'abcdefgh';
+  const row = Math.floor(index / 8), col = index % 8;
   return `${files[col]}${8 - row}`;
 }
 
@@ -297,33 +330,7 @@ function openingKingDiscipline(position, color) {
   return score;
 }
 
-function pieceAttacksSquare(position, from, target, color) {
-  const piece = position.board[from];
-  if (!piece || colorOf(piece) !== color) return false;
-  const type = typeOf(piece);
-  const [fr, fc] = rowCol(from), [tr, tc] = rowCol(target);
-  const dr = tr - fr, dc = tc - fc;
-  if (type === 'p') return dr === (color === WHITE ? -1 : 1) && Math.abs(dc) === 1;
-  if (type === 'n') return KNIGHT_DELTAS.some(([r, c]) => r === dr && c === dc);
-  if (type === 'k') return Math.max(Math.abs(dr), Math.abs(dc)) === 1;
-  let stepR = 0, stepC = 0;
-  if (type === 'b' || type === 'q') {
-    if (Math.abs(dr) === Math.abs(dc) && dr !== 0) { stepR = Math.sign(dr); stepC = Math.sign(dc); }
-  }
-  if (!stepR && !stepC && (type === 'r' || type === 'q')) {
-    if (dr === 0 && dc !== 0) stepC = Math.sign(dc);
-    else if (dc === 0 && dr !== 0) stepR = Math.sign(dr);
-  }
-  if (!stepR && !stepC) return false;
-  let rr = fr + stepR, cc = fc + stepC;
-  while (rr !== tr || cc !== tc) {
-    if (position.board[rr * 8 + cc]) return false;
-    rr += stepR; cc += stepC;
-  }
-  return true;
-}
-
-function attackPotential(position, color) {
+function attackPotential(position, color, attacks) {
   const enemy = opposite(color);
   const kingSq = position.kingSquare(enemy);
   if (kingSq < 0) return MATE_SCORE;
@@ -333,34 +340,28 @@ function attackPotential(position, color) {
     const rr = kr + dr, cc = kc + dc;
     if (inBounds(rr, cc)) zone.push(rr * 8 + cc);
   }
-  let score = 0, attackers = 0;
-  for (let i = 0; i < 64; i++) {
-    const p = position.board[i];
-    if (!p || colorOf(p) !== color || typeOf(p) === 'k') continue;
-    let hits = 0;
-    for (const sq of zone) if (pieceAttacksSquare(position, i, sq, color)) hits++;
-    if (hits) {
-      const weight = typeOf(p) === 'q' ? 13 : typeOf(p) === 'r' ? 11 : typeOf(p) === 'b' ? 9 : typeOf(p) === 'n' ? 10 : 6;
-      score += weight * hits;
-      attackers++;
-    }
+  let weightedHits = 0, hitCount = 0;
+  for (const sq of zone) {
+    weightedHits += attacks[color].weights[sq];
+    hitCount += attacks[color].counts[sq];
   }
-  if (attackers >= 2) score += attackers * 10;
+  let score = weightedHits * 1.45;
+  if (hitCount >= 2) score += Math.min(48, hitCount * 6);
   score += rayPressure(position, kingSq, color) * 1.35;
   return score;
 }
 
-function tempoAndInitiative(position, perspective) {
+function tempoAndInitiative(position, perspective, attacks) {
   const us = perspective, them = opposite(us);
   let score = position.turn === us ? 7 : -7;
-  const usKing = position.kingSquare(us);
-  const themKing = position.kingSquare(them);
-  if (themKing >= 0 && position.isSquareAttacked(themKing, us)) score += 34;
-  if (usKing >= 0 && position.isSquareAttacked(usKing, them)) score -= 38;
+  const usKing = position.kingSquare(us), themKing = position.kingSquare(them);
+  if (themKing >= 0 && attacks[us].counts[themKing]) score += 34;
+  if (usKing >= 0 && attacks[them].counts[usKing]) score -= 38;
   return score;
 }
 
 export function evaluate(position, perspective = position.turn) {
+  const attacks = buildAttackPair(position);
   let score = 0;
   score += materialScore(position, perspective);
   score += pieceSquareActivity(position, perspective);
@@ -368,44 +369,42 @@ export function evaluate(position, perspective = position.turn) {
   score += pawnStructure(position, perspective);
   score += developmentScore(position, perspective);
   score += rookAndBishopStructure(position, perspective);
-  score += loosePieceScore(position, perspective);
-  const ownKing = kingSafetyFor(position, perspective);
-  const enemyKing = kingSafetyFor(position, opposite(perspective));
+  score += loosePieceScore(position, perspective, attacks);
+  const ownKing = kingSafetyFor(position, perspective, attacks);
+  const enemyKing = kingSafetyFor(position, opposite(perspective), attacks);
   score += (ownKing - enemyKing) * 1.5;
   score += (openingKingDiscipline(position, perspective) - openingKingDiscipline(position, opposite(perspective))) * 1.35;
-  score += (attackPotential(position, perspective) - attackPotential(position, opposite(perspective))) * 1.15;
-  score += tempoAndInitiative(position, perspective);
+  score += (attackPotential(position, perspective, attacks) - attackPotential(position, opposite(perspective), attacks)) * 1.15;
+  score += tempoAndInitiative(position, perspective, attacks);
   return Math.round(score);
 }
 
 export function personalityMoveBonus(position, move) {
   const us = position.turn, them = opposite(us);
   const next = position.makeMove(move);
+  const beforeAttacks = buildAttackPair(position), afterAttacks = buildAttackPair(next);
   let bonus = 0;
-  const beforeMaterial = materialBalance(position, us);
-  const afterMaterial = materialBalance(next, us);
+  const beforeMaterial = materialBalance(position, us), afterMaterial = materialBalance(next, us);
   const movedValue = PIECE_VALUES[typeOf(move.piece)] || 0;
   const capturedValue = move.captured ? (PIECE_VALUES[typeOf(move.captured)] || 0) : 0;
-  const hangingRisk = next.isSquareAttacked(move.to, them) ? Math.max(0, movedValue - capturedValue) : 0;
+  const hangingRisk = afterAttacks[them].counts[move.to] ? Math.max(0, movedValue - capturedValue) : 0;
   const sacrifice = Math.max(0, beforeMaterial - afterMaterial, hangingRisk);
   if (next.isInCheck(them)) bonus += 36;
   if (move.flags & FLAGS.CAPTURE) bonus += 5;
   if (move.promotion) bonus += 35;
-  const beforeAttack = attackPotential(position, us);
-  const afterAttack = attackPotential(next, us);
+  const beforeAttack = attackPotential(position, us, beforeAttacks);
+  const afterAttack = attackPotential(next, us, afterAttacks);
   bonus += Math.max(-15, Math.min(38, (afterAttack - beforeAttack) * 0.8));
-  const enemyKingBefore = kingSafetyFor(position, them);
-  const enemyKingAfter = kingSafetyFor(next, them);
+  const enemyKingBefore = kingSafetyFor(position, them, beforeAttacks);
+  const enemyKingAfter = kingSafetyFor(next, them, afterAttacks);
   bonus += Math.max(-10, Math.min(45, (enemyKingBefore - enemyKingAfter) * 0.55));
-  const ownKingBefore = kingSafetyFor(position, us);
-  const ownKingAfter = kingSafetyFor(next, us);
+  const ownKingBefore = kingSafetyFor(position, us, beforeAttacks);
+  const ownKingAfter = kingSafetyFor(next, us, afterAttacks);
   if (ownKingAfter < ownKingBefore) bonus -= Math.min(80, (ownKingBefore - ownKingAfter) * 1.3);
   const disciplineLoss = openingKingDiscipline(position, us) - openingKingDiscipline(next, us);
   if (disciplineLoss > 0) bonus -= Math.min(55, disciplineLoss * 1.35);
   if (sacrifice > 0) {
-    const compensation = Math.max(0, afterAttack - beforeAttack)
-      + (next.isInCheck(them) ? 34 : 0)
-      + (enemyKingBefore - enemyKingAfter) * 0.45;
+    const compensation = Math.max(0, afterAttack - beforeAttack) + (next.isInCheck(them) ? 34 : 0) + (enemyKingBefore - enemyKingAfter) * 0.45;
     bonus += Math.min(52, compensation * 0.75) - Math.max(0, sacrifice - compensation * 5) * 0.10;
   }
   return Math.round(bonus);

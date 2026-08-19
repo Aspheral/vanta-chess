@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      MOVE_TIME_MS: '350'
+      MOVE_TIME_MS: '650'
       MAX_PLIES: '140'
     steps:
       - uses: actions/checkout@v4
@@ -66,5 +66,3 @@ jobs:
           git add benchmarks/elo-latest.json
           git commit -m 'Record full Elo calibration' || true
           git push
-
-# Touching this workflow intentionally triggers the final calibration pass.

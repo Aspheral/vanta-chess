@@ -13,7 +13,7 @@ export const VANTA_PERSONALITY = Object.freeze({
 
 export const STRENGTH_PRESETS = Object.freeze({
   1200: { maxDepth: 4, moveTimeMs: 80, nodeLimit: 35000, selectionWindow: 105, evalNoise: 28 },
-  1500: { maxDepth: 6, moveTimeMs: 350, nodeLimit: 220000, selectionWindow: 32, evalNoise: 4 },
+  1500: { maxDepth: 6, moveTimeMs: 650, nodeLimit: 260000, selectionWindow: 32, evalNoise: 4 },
   1800: { maxDepth: 7, moveTimeMs: 500, nodeLimit: 400000, selectionWindow: 18, evalNoise: 2 },
 });
 

@@ -1,4 +1,4 @@
-const CACHE='vanta-chess-v4';
+const CACHE='vanta-chess-v5';
 const SHELL=[
   './',
   './index.html',
