@@ -12,9 +12,9 @@ export const VANTA_PERSONALITY = Object.freeze({
 });
 
 export const STRENGTH_PRESETS = Object.freeze({
-  1200: { maxDepth: 3, moveTimeMs: 70, nodeLimit: 25000, selectionWindow: 90, evalNoise: 24 },
-  1500: { maxDepth: 5, moveTimeMs: 350, nodeLimit: 180000, selectionWindow: 55, evalNoise: 12 },
-  1800: { maxDepth: 6, moveTimeMs: 350, nodeLimit: 300000, selectionWindow: 35, evalNoise: 6 },
+  1200: { maxDepth: 4, moveTimeMs: 80, nodeLimit: 35000, selectionWindow: 105, evalNoise: 28 },
+  1500: { maxDepth: 6, moveTimeMs: 350, nodeLimit: 220000, selectionWindow: 32, evalNoise: 4 },
+  1800: { maxDepth: 7, moveTimeMs: 500, nodeLimit: 400000, selectionWindow: 18, evalNoise: 2 },
 });
 
 export function strengthConfig(target = 1500) {

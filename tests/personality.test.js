@@ -16,3 +16,9 @@ test('own king shield is worth more than recklessly advanced shield pawns', () =
   const exposed = Position.fromFEN('6k1/5ppp/8/8/5PPP/8/8/6K1 w - - 0 1');
   assert.ok(evaluate(shielded, 'w') > evaluate(exposed, 'w'));
 });
+
+test('an undefended queen is valued far below the same queen with a real defender', () => {
+  const loose = Position.fromFEN('r5k1/8/8/8/3q4/8/3R4/6K1 b - - 0 1');
+  const defended = Position.fromFEN('3r2k1/8/8/8/3q4/8/3R4/6K1 b - - 0 1');
+  assert.ok(evaluate(defended, 'b') > evaluate(loose, 'b') + 100);
+});

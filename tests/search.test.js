@@ -31,3 +31,11 @@ test('ponder branches contain legal opponent move and legal response',()=>{
     assert.ok(after.moveFromUci(b.engineMove),b.engineMove);
   }
 });
+
+test('iterative deepening never reports a partially searched depth as complete',()=>{
+  const p=Position.start();
+  const e=new SearchEngine({maxDepth:4,moveTimeMs:10000,nodeLimit:2,selectionWindow:0,evalNoise:0});
+  const r=e.search(p);
+  assert.equal(r.depth,0);
+  assert.ok(r.move);
+});

@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/engine/elo-match.js'
+      - 'src/engine/**'
+      - 'src/chess/**'
       - '.github/workflows/elo.yml'
   pull_request:
   workflow_dispatch:

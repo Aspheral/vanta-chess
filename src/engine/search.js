@@ -4,247 +4,487 @@ import { evaluate, personalityMoveBonus, MATE_SCORE } from './evaluation.js';
 import { strengthConfig, VANTA_PERSONALITY } from './personality.js';
 
 const INF = 1_000_000;
+const MATE_TT_BOUND = MATE_SCORE - 1000;
 
 export class SearchEngine {
   constructor(config = {}) {
     this.config = { ...strengthConfig(1500), ...config };
     this.tt = new Map();
     this.history = new Map();
-    this.killers = Array.from({length:64},()=>[null,null]);
+    this.killers = Array.from({ length: 64 }, () => [null, null]);
+    this.rootOrder = [];
+    this.evalCache = new Map();
     this.resetStats();
   }
 
   resetStats() {
-    this.nodes=0; this.qnodes=0; this.ttHits=0; this.cutoffs=0; this.start=0; this.deadline=0; this.stopped=false;
+    this.nodes = 0;
+    this.qnodes = 0;
+    this.ttHits = 0;
+    this.cutoffs = 0;
+    this.start = 0;
+    this.deadline = 0;
+    this.stopped = false;
+    this.evalCache.clear();
   }
 
-  stop() { this.stopped=true; }
-  timeUp() { return this.stopped || this.nodes >= this.config.nodeLimit || (this.deadline && performanceNow() >= this.deadline); }
+  stop() { this.stopped = true; }
+
+  timeUp() {
+    return this.stopped
+      || (this.nodes + this.qnodes) >= this.config.nodeLimit
+      || (this.deadline && performanceNow() >= this.deadline);
+  }
+
+  staticEval(position, perspective = position.turn) {
+    const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 15)}`;
+    const cached = this.evalCache.get(key);
+    if (cached !== undefined) return cached;
+    const score = evaluate(position, perspective);
+    this.evalCache.set(key, score);
+    if (this.evalCache.size > 40000) {
+      let removed = 0;
+      for (const k of this.evalCache.keys()) {
+        this.evalCache.delete(k);
+        if (++removed >= 8000) break;
+      }
+    }
+    return score;
+  }
 
   search(position, options = {}) {
     this.resetStats();
-    this.start=performanceNow();
-    const moveTimeMs=options.moveTimeMs ?? this.config.moveTimeMs;
-    this.deadline=this.start+moveTimeMs;
-    const maxDepth=options.maxDepth ?? this.config.maxDepth;
-    let best=null, completedDepth=0, rootLines=[];
-    for(let depth=1;depth<=maxDepth;depth++) {
-      const result=this.searchRoot(position,depth,options);
-      if(this.timeUp() && completedDepth>0) break;
-      if(result.bestMove) { best=result; completedDepth=depth; rootLines=result.lines; }
-      if(Math.abs(result.score)>=MATE_SCORE-1000) break;
+    this.start = performanceNow();
+    const moveTimeMs = options.moveTimeMs ?? this.config.moveTimeMs;
+    this.deadline = this.start + moveTimeMs;
+    const maxDepth = options.maxDepth ?? this.config.maxDepth;
+
+    let best = null;
+    let partial = null;
+    let completedDepth = 0;
+    let rootLines = [];
+
+    for (let depth = 1; depth <= maxDepth; depth++) {
+      const result = this.searchRoot(position, depth, options);
+      if (result.bestMove) partial = result;
+      if (!result.complete) break;
+      if (result.bestMove) {
+        best = result;
+        completedDepth = depth;
+        rootLines = result.lines;
+        this.rootOrder = result.lines.map(line => moveToUci(line.move));
+      }
+      if (Math.abs(result.score) >= MATE_SCORE - 1000) break;
+      if (this.timeUp()) break;
     }
-    const elapsed=Math.max(1,performanceNow()-this.start);
-    if(!best) {
-      const excluded=new Set(options.excludeMoves||[]);
-      const allLegal=position.legalMoves();
-      const legal=allLegal.filter(move=>!excluded.has(moveToUci(move)));
-      const fallback=legal.length?legal:allLegal;
-      if(fallback.length) best={bestMove:fallback[0],score:evaluate(position.makeMove(fallback[0]),position.turn),pv:[fallback[0]],lines:[]};
-      else best={bestMove:null,score:evaluate(position,position.turn),pv:[],lines:[]};
+
+    const elapsed = Math.max(1, performanceNow() - this.start);
+
+    if (!best && partial?.bestMove) best = partial;
+    if (!best) {
+      const excluded = new Set(options.excludeMoves || []);
+      const allLegal = position.legalMoves();
+      const legal = allLegal.filter(move => !excluded.has(moveToUci(move)));
+      const fallback = legal.length ? legal : allLegal;
+      if (fallback.length) {
+        const move = fallback[0];
+        best = {
+          bestMove: move,
+          score: -this.staticEval(position.makeMove(move)),
+          pv: [move],
+          lines: [],
+        };
+      } else {
+        const terminalScore = position.isInCheck() ? -MATE_SCORE : 0;
+        best = { bestMove: null, score: terminalScore, pv: [], lines: [] };
+      }
     }
-    const chosen=this.personalitySelect(position, rootLines.length?rootLines:best.lines || [], best);
+
+    const selectionLines = completedDepth > 0 ? rootLines : [];
+    const chosen = this.personalitySelect(position, selectionLines, best);
+    const candidateLines = completedDepth > 0 ? rootLines : [];
+
     return {
       move: chosen.move || best.bestMove,
       score: chosen.score ?? best.score,
       objectiveScore: chosen.objectiveScore ?? best.score,
       pv: chosen.pv || best.pv,
       depth: completedDepth,
-      nodes:this.nodes,
-      qnodes:this.qnodes,
-      ttHits:this.ttHits,
-      cutoffs:this.cutoffs,
-      timeMs:Math.round(elapsed),
-      nps:Math.round((this.nodes+this.qnodes)*1000/elapsed),
-      candidates:(rootLines.length?rootLines:best.lines||[]).slice(0,6).map(x=>({uci:moveToUci(x.move),score:x.score,pv:x.pv.map(moveToUci),personality:x.personality||0})),
+      nodes: this.nodes,
+      qnodes: this.qnodes,
+      ttHits: this.ttHits,
+      cutoffs: this.cutoffs,
+      timeMs: Math.round(elapsed),
+      nps: Math.round((this.nodes + this.qnodes) * 1000 / elapsed),
+      candidates: candidateLines.slice(0, 6).map(x => ({
+        uci: moveToUci(x.move),
+        score: x.score,
+        pv: x.pv.map(moveToUci),
+        personality: x.personality || 0,
+      })),
     };
   }
 
-  searchRoot(position, depth, options={}) {
-    const excluded=new Set(options.excludeMoves||[]);
-    let moves=this.orderMoves(position,position.legalMoves(),0,null).filter(move=>!excluded.has(moveToUci(move)));
-    const lines=[];
-    for(const move of moves) {
-      if(this.timeUp()) break;
-      const next=position.makeMove(move);
-      const pv=[];
-      // Personality selection needs comparable root values. Internal nodes still use
-      // alpha-beta windows, but each root candidate is resolved with a full window
-      // instead of exposing fail-low/fail-high bounds as if they were exact scores.
-      const score=-this.negamax(next,depth-1,-INF,INF,1,pv,[position.hash]);
-      lines.push({move,score,pv:[move,...pv],personality:personalityMoveBonus(position,move)});
+  searchRoot(position, depth, options = {}) {
+    const excluded = new Set(options.excludeMoves || []);
+    let moves = this.orderMoves(position, position.legalMoves(), 0, null)
+      .filter(move => !excluded.has(moveToUci(move)));
+
+    if (this.rootOrder.length) {
+      const rank = new Map(this.rootOrder.map((uci, index) => [uci, index]));
+      moves = [...moves].sort((a, b) => {
+        const ar = rank.has(moveToUci(a)) ? rank.get(moveToUci(a)) : 999;
+        const br = rank.has(moveToUci(b)) ? rank.get(moveToUci(b)) : 999;
+        return ar - br;
+      });
     }
-    lines.sort((a,b)=>b.score-a.score);
-    const best=lines[0] || {move:null,score:evaluate(position,position.turn),pv:[]};
-    return {bestMove:best.move,score:best.score,pv:best.pv,lines};
+
+    if (!moves.length) {
+      const score = position.isInCheck() ? -MATE_SCORE : 0;
+      return { bestMove: null, score, pv: [], lines: [], complete: true };
+    }
+
+    const lines = [];
+    const path = [position.hash];
+    const personalityWindow = Math.max(0, this.config.selectionWindow ?? 0);
+    let bestMove = null;
+    let bestScore = -INF;
+    let bestPv = [];
+    let complete = true;
+
+    for (const move of moves) {
+      if (this.timeUp()) { complete = false; break; }
+      const next = position.makeMove(move);
+      let score;
+      let pv = [];
+      let exact = true;
+
+      if (bestMove == null) {
+        score = -this.negamax(next, depth - 1, -INF, INF, 1, pv, path);
+      } else {
+        const threshold = bestScore - personalityWindow;
+        score = -this.negamax(next, depth - 1, -threshold - 1, -threshold, 1, pv, path);
+        if (this.timeUp()) { complete = false; break; }
+        if (score >= threshold) {
+          pv = [];
+          score = -this.negamax(next, depth - 1, -INF, INF, 1, pv, path);
+        } else {
+          exact = false;
+        }
+      }
+
+      if (this.timeUp()) { complete = false; break; }
+
+      const line = {
+        move,
+        score,
+        pv: [move, ...pv],
+        personality: personalityMoveBonus(position, move),
+        exact,
+      };
+      lines.push(line);
+
+      if (exact && score > bestScore) {
+        bestScore = score;
+        bestMove = move;
+        bestPv = line.pv;
+      }
+    }
+
+    lines.sort((a, b) => {
+      if (a.exact !== b.exact) return a.exact ? -1 : 1;
+      return b.score - a.score;
+    });
+
+    if (bestMove == null && lines.length) {
+      bestMove = lines[0].move;
+      bestScore = lines[0].score;
+      bestPv = lines[0].pv;
+    }
+
+    return {
+      bestMove,
+      score: bestScore,
+      pv: bestPv,
+      lines,
+      complete: complete && lines.length === moves.length,
+    };
   }
 
-  negamax(position,depth,alpha,beta,ply,pvOut,pathHashes) {
+  negamax(position, depth, alpha, beta, ply, pvOut, pathHashes) {
     this.nodes++;
-    if((this.nodes & 1023)===0 && this.timeUp()) return evaluate(position,position.turn);
-    // A repeated position is a draw only on its third occurrence, not the second.
-    // The previous implementation treated the first recurrence as a draw, which
-    // made Vanta far more repetition-happy than actual chess rules require.
-    let priorOccurrences=0;
-    for(const hash of pathHashes) if(hash===position.hash) priorOccurrences++;
-    if(priorOccurrences>=2) return this.repetitionUtility(position);
-    const status=position.status(1);
-    if(status.over) {
-      if(status.reason==='checkmate') return -MATE_SCORE+ply;
-      return 0;
-    }
-    if(depth<=0) return this.quiescence(position,alpha,beta,ply);
-    const key=position.hash.toString();
-    const tt=this.tt.get(key);
-    if(tt && tt.depth>=depth) {
+    if ((this.nodes & 511) === 0 && this.timeUp()) return this.staticEval(position);
+
+    let priorOccurrences = 0;
+    for (const hash of pathHashes) if (hash === position.hash) priorOccurrences++;
+    if (priorOccurrences >= 2) return this.repetitionUtility(position);
+    if (position.halfmove >= 100) return 0;
+
+    const inCheck = position.isInCheck();
+    if (inCheck && depth < 8) depth++;
+
+    const key = `${position.hash.toString()}:${Math.min(position.halfmove, 100)}:${Math.min(position.fullmove, 15)}`;
+    const tt = this.tt.get(key);
+    if (tt && tt.depth >= depth) {
       this.ttHits++;
-      if(tt.flag==='exact') return tt.score;
-      if(tt.flag==='lower') alpha=Math.max(alpha,tt.score);
-      else if(tt.flag==='upper') beta=Math.min(beta,tt.score);
-      if(alpha>=beta) return tt.score;
+      const ttScore = scoreFromTT(tt.score, ply);
+      if (tt.flag === 'exact') return ttScore;
+      if (tt.flag === 'lower') alpha = Math.max(alpha, ttScore);
+      else if (tt.flag === 'upper') beta = Math.min(beta, ttScore);
+      if (alpha >= beta) return ttScore;
     }
-    const inCheck=position.isInCheck();
-    if(inCheck && depth<8) depth++;
-    const originalAlpha=alpha;
-    let bestScore=-INF,bestMove=null,bestPv=[];
-    const moves=this.orderMoves(position,position.legalMoves(),ply,tt?.move||null);
-    for(let i=0;i<moves.length;i++) {
-      const move=moves[i];
-      if(this.timeUp()) break;
-      const next=position.makeMove(move);
-      let childPv=[];
-      let reduction=0;
-      if(depth>=3 && i>=5 && !inCheck && !(move.flags & FLAGS.CAPTURE) && !move.promotion) reduction=1;
-      let score=-this.negamax(next,depth-1-reduction,-beta,-alpha,ply+1,childPv,[...pathHashes,position.hash]);
-      if(reduction && score>alpha) {
-        childPv=[];
-        score=-this.negamax(next,depth-1,-beta,-alpha,ply+1,childPv,[...pathHashes,position.hash]);
+
+    if (position.isInsufficientMaterial()) return 0;
+    if (depth <= 0) return this.quiescence(position, alpha, beta, ply);
+
+    const moves = this.orderMoves(position, position.legalMoves(), ply, tt?.move || null);
+    if (moves.length === 0) return inCheck ? -MATE_SCORE + ply : 0;
+
+    const originalAlpha = alpha;
+    const originalBeta = beta;
+    let bestScore = -INF;
+    let bestMove = null;
+    let bestPv = [];
+
+    for (let i = 0; i < moves.length; i++) {
+      if (this.timeUp()) break;
+      const move = moves[i];
+      const next = position.makeMove(move);
+      const quiet = !(move.flags & FLAGS.CAPTURE) && !move.promotion;
+      let reduction = 0;
+      if (depth >= 3 && i >= 4 && !inCheck && quiet) reduction = 1;
+
+      const fullDepth = depth - 1;
+      const reducedDepth = Math.max(0, fullDepth - reduction);
+      let childPv = [];
+      let score;
+
+      pathHashes.push(position.hash);
+      if (i === 0) {
+        score = -this.negamax(next, reducedDepth, -beta, -alpha, ply + 1, childPv, pathHashes);
+        if (reduction && score > alpha && !this.timeUp()) {
+          childPv = [];
+          score = -this.negamax(next, fullDepth, -beta, -alpha, ply + 1, childPv, pathHashes);
+        }
+      } else {
+        score = -this.negamax(next, reducedDepth, -alpha - 1, -alpha, ply + 1, childPv, pathHashes);
+        if (reduction && score > alpha && !this.timeUp()) {
+          childPv = [];
+          score = -this.negamax(next, fullDepth, -alpha - 1, -alpha, ply + 1, childPv, pathHashes);
+        }
+        if (score > alpha && score < beta && !this.timeUp()) {
+          childPv = [];
+          score = -this.negamax(next, fullDepth, -beta, -alpha, ply + 1, childPv, pathHashes);
+        }
       }
-      if(score>bestScore) { bestScore=score; bestMove=move; bestPv=[move,...childPv]; }
-      if(score>alpha) alpha=score;
-      if(alpha>=beta) {
+      pathHashes.pop();
+
+      if (this.timeUp()) break;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = move;
+        bestPv = [move, ...childPv];
+      }
+      if (score > alpha) alpha = score;
+
+      if (alpha >= beta) {
         this.cutoffs++;
-        if(!(move.flags & FLAGS.CAPTURE)) {
-          const u=moveToUci(move); const k=this.killers[ply]||[null,null];
-          if(k[0]!==u) this.killers[ply]=[u,k[0]];
-          this.history.set(u,(this.history.get(u)||0)+depth*depth);
+        if (quiet) {
+          const u = moveToUci(move);
+          const k = this.killers[ply] || [null, null];
+          if (k[0] !== u) this.killers[ply] = [u, k[0]];
+          this.history.set(u, Math.min(50000, (this.history.get(u) || 0) + depth * depth));
         }
         break;
       }
     }
-    if(bestMove==null) return evaluate(position,position.turn);
+
+    if (bestMove == null) return this.staticEval(position);
     pvOut.push(...bestPv);
-    const flag=bestScore<=originalAlpha?'upper':bestScore>=beta?'lower':'exact';
-    this.tt.set(key,{depth,score:bestScore,flag,move:moveToUci(bestMove)});
-    if(this.tt.size>150000) {
-      let n=0; for(const k of this.tt.keys()) { this.tt.delete(k); if(++n>30000) break; }
+
+    if (this.timeUp()) return bestScore;
+
+    const flag = bestScore <= originalAlpha ? 'upper' : bestScore >= originalBeta ? 'lower' : 'exact';
+    this.tt.set(key, {
+      depth,
+      score: scoreToTT(bestScore, ply),
+      flag,
+      move: moveToUci(bestMove),
+    });
+
+    if (this.tt.size > 180000) {
+      let removed = 0;
+      for (const k of this.tt.keys()) {
+        this.tt.delete(k);
+        if (++removed >= 36000) break;
+      }
     }
+
     return bestScore;
   }
 
-  quiescence(position,alpha,beta,ply) {
+  quiescence(position, alpha, beta, ply) {
     this.qnodes++;
-    const inCheck=position.isInCheck();
-    let moves=inCheck?position.legalMoves():position.legalMoves({capturesOnly:true});
-    if(inCheck && moves.length===0) return -MATE_SCORE+ply;
-    const stand=evaluate(position,position.turn);
-    if(!inCheck) {
-      if(stand>=beta) return beta;
-      if(stand>alpha) alpha=stand;
+    if (position.halfmove >= 100 || position.isInsufficientMaterial()) return 0;
+
+    const inCheck = position.isInCheck();
+    let moves = inCheck ? position.legalMoves() : position.legalMoves({ capturesOnly: true });
+    if (inCheck && moves.length === 0) return -MATE_SCORE + ply;
+
+    const stand = this.staticEval(position);
+    if (!inCheck) {
+      if (stand >= beta) return beta;
+      if (stand > alpha) alpha = stand;
     }
-    if(ply>8 || this.timeUp()) return alpha;
-    moves=this.orderMoves(position,moves,ply,null);
-    for(const move of moves) {
-      if(!inCheck && (move.flags & FLAGS.CAPTURE)) {
-        const victim=PIECE_VALUES[typeOf(move.captured)]||0;
-        const attacker=PIECE_VALUES[typeOf(move.piece)]||0;
-        if(stand+victim+120<alpha && victim<attacker) continue;
+
+    if (ply > 10 || this.timeUp()) return inCheck ? alpha : Math.max(alpha, stand);
+
+    moves = this.orderMoves(position, moves, ply, null);
+    for (const move of moves) {
+      if (this.timeUp()) break;
+      if (!inCheck && (move.flags & FLAGS.CAPTURE)) {
+        const victim = PIECE_VALUES[typeOf(move.captured)] || 0;
+        const attacker = PIECE_VALUES[typeOf(move.piece)] || 0;
+        if (stand + victim + 110 < alpha && victim < attacker) continue;
       }
-      const score=-this.quiescence(position.makeMove(move),-beta,-alpha,ply+1);
-      if(score>=beta) return beta;
-      if(score>alpha) alpha=score;
+      const score = -this.quiescence(position.makeMove(move), -beta, -alpha, ply + 1);
+      if (score >= beta) return beta;
+      if (score > alpha) alpha = score;
     }
     return alpha;
   }
 
-  orderMoves(position,moves,ply,ttMove) {
-    const killers=this.killers[ply]||[];
-    const scoreMove = m => {
-      const u=moveToUci(m);
-      let s=0;
-      if(ttMove===u) s+=100000;
-      const next=position.makeMove(m);
-      if(next.isInCheck(next.turn)) s+=50000;
-      if(m.flags & FLAGS.CAPTURE) s+=20000+(PIECE_VALUES[typeOf(m.captured)]||0)*10-(PIECE_VALUES[typeOf(m.piece)]||0);
-      if(m.promotion) s+=30000+(PIECE_VALUES[m.promotion]||0);
-      if(killers[0]===u) s+=9000; else if(killers[1]===u) s+=7000;
-      s+=(this.history.get(u)||0);
-      return s;
+  orderMoves(position, moves, ply, ttMove) {
+    const killers = this.killers[ply] || [];
+    const scoreMove = move => {
+      const u = moveToUci(move);
+      let score = 0;
+      if (ttMove === u) score += 1_000_000;
+      if (move.promotion) score += 90_000 + (PIECE_VALUES[move.promotion] || 0);
+      if (move.flags & FLAGS.CAPTURE) {
+        score += 70_000
+          + (PIECE_VALUES[typeOf(move.captured)] || 0) * 12
+          - (PIECE_VALUES[typeOf(move.piece)] || 0);
+      }
+      if (killers[0] === u) score += 18_000;
+      else if (killers[1] === u) score += 14_000;
+      score += Math.min(30000, this.history.get(u) || 0);
+      return score;
     };
-    return [...moves].sort((a,b)=>scoreMove(b)-scoreMove(a));
+    return [...moves].sort((a, b) => scoreMove(b) - scoreMove(a));
   }
 
-  personalitySelect(position,lines,bestFallback) {
-    if(!lines?.length) return {move:bestFallback.bestMove,score:bestFallback.score,objectiveScore:bestFallback.score,pv:bestFallback.pv};
-    const bestScore=lines[0].score;
-    if(Math.abs(bestScore)>=MATE_SCORE-1000) return {move:lines[0].move,score:bestScore,objectiveScore:bestScore,pv:lines[0].pv};
-    const window=this.config.selectionWindow ?? 55;
-    const eligible=lines.filter(l=>l.score>=bestScore-window);
-    const scored=eligible.map((l,i)=>{
-      const deterministicNoise=this.config.evalNoise ? pseudoNoise(position.hash,l.move,this.config.evalNoise) : 0;
-      const composite=l.score+(l.personality||0)+deterministicNoise;
-      return {...l,composite};
-    }).sort((a,b)=>b.composite-a.composite);
-    const pick=scored[0]||lines[0];
-    return {move:pick.move,score:pick.composite,objectiveScore:pick.score,pv:pick.pv};
+  personalitySelect(position, lines, bestFallback) {
+    if (!lines?.length) {
+      return {
+        move: bestFallback.bestMove,
+        score: bestFallback.score,
+        objectiveScore: bestFallback.score,
+        pv: bestFallback.pv,
+      };
+    }
+
+    const exactLines = lines.filter(line => line.exact !== false);
+    const pool = exactLines.length ? exactLines : lines;
+    const bestScore = Math.max(...pool.map(line => line.score));
+
+    if (Math.abs(bestScore) >= MATE_SCORE - 1000) {
+      const forced = pool.find(line => line.score === bestScore) || pool[0];
+      return { move: forced.move, score: bestScore, objectiveScore: bestScore, pv: forced.pv };
+    }
+
+    const window = this.config.selectionWindow ?? 32;
+    const eligible = pool.filter(line => line.score >= bestScore - window);
+    const scored = eligible.map(line => {
+      const deterministicNoise = this.config.evalNoise
+        ? pseudoNoise(position.hash, line.move, this.config.evalNoise)
+        : 0;
+      const composite = line.score + (line.personality || 0) + deterministicNoise;
+      return { ...line, composite };
+    }).sort((a, b) => b.composite - a.composite);
+
+    const pick = scored[0] || pool[0];
+    return { move: pick.move, score: pick.composite, objectiveScore: pick.score, pv: pick.pv };
   }
 
   repetitionUtility(position) {
-    const staticScore=evaluate(position,position.turn);
-    const material=materialBalance(position,position.turn);
-    const aversion=180+Math.round((VANTA_PERSONALITY.drawAversion/100)*520);
-    // Vanta treats a draw as a bad result when the side to move is materially
-    // ahead OR objectively winning. When behind, a repetition is an acceptable
-    // defensive resource. Negamax flips this value correctly for the opponent.
-    if(material>0 || staticScore>=80) return -aversion;
-    if(material<0 || staticScore<=-80) return Math.round(aversion*0.35);
+    const staticScore = this.staticEval(position);
+    const material = materialBalance(position, position.turn);
+    const aversion = 180 + Math.round((VANTA_PERSONALITY.drawAversion / 100) * 520);
+    if (material > 0 || staticScore >= 80) return -aversion;
+    if (material < 0 || staticScore <= -80) return Math.round(aversion * 0.35);
     return 0;
   }
 
-  predictBranches(position,count=4,options={}) {
-    const predictionDepth=Math.max(2,Math.min(4,(options.depth ?? this.config.maxDepth)-1));
-    const opponentSearch=new SearchEngine({...this.config,maxDepth:predictionDepth,moveTimeMs:Math.max(60,Math.floor((options.timeMs??220)/2)),nodeLimit:60000,selectionWindow:0,evalNoise:0});
-    const root=opponentSearch.searchRoot(position,predictionDepth,{});
-    const candidates=root.lines.slice(0,count);
-    const branches=[];
-    for(const cand of candidates) {
-      const after=position.makeMove(cand.move);
-      const responseEngine=new SearchEngine({...this.config,maxDepth:predictionDepth,moveTimeMs:Math.max(45,Math.floor((options.timeMs??220)/count)),nodeLimit:50000});
-      const response=responseEngine.search(after,{maxDepth:predictionDepth,moveTimeMs:Math.max(45,Math.floor((options.timeMs??220)/count))});
-      if(response.move) branches.push({
-        opponentMove:moveToUci(cand.move),
-        engineMove:moveToUci(response.move),
-        evaluation:-cand.score,
-        depth:predictionDepth,
-        continuation:[moveToUci(cand.move),...response.pv.map(moveToUci)].slice(0,6),
+  predictBranches(position, count = 4, options = {}) {
+    const predictionDepth = Math.max(2, Math.min(4, (options.depth ?? this.config.maxDepth) - 1));
+    const opponentSearch = new SearchEngine({
+      ...this.config,
+      maxDepth: predictionDepth,
+      moveTimeMs: Math.max(60, Math.floor((options.timeMs ?? 220) / 2)),
+      nodeLimit: 60000,
+      selectionWindow: 0,
+      evalNoise: 0,
+    });
+    const root = opponentSearch.searchRoot(position, predictionDepth, {});
+    const candidates = root.lines.filter(line => line.exact !== false).slice(0, count);
+    const branches = [];
+
+    for (const candidate of candidates) {
+      const after = position.makeMove(candidate.move);
+      const responseEngine = new SearchEngine({
+        ...this.config,
+        maxDepth: predictionDepth,
+        moveTimeMs: Math.max(45, Math.floor((options.timeMs ?? 220) / count)),
+        nodeLimit: 50000,
       });
+      const response = responseEngine.search(after, {
+        maxDepth: predictionDepth,
+        moveTimeMs: Math.max(45, Math.floor((options.timeMs ?? 220) / count)),
+      });
+      if (response.move) {
+        branches.push({
+          opponentMove: moveToUci(candidate.move),
+          engineMove: moveToUci(response.move),
+          evaluation: -candidate.score,
+          depth: predictionDepth,
+          continuation: [moveToUci(candidate.move), ...response.pv.map(moveToUci)].slice(0, 6),
+        });
+      }
     }
     return branches;
   }
 }
 
 function performanceNow() { return globalThis.performance?.now?.() ?? Date.now(); }
-function pseudoNoise(hash,move,amplitude) {
-  let x=Number((hash ^ BigInt(move.from*131+move.to*17+(move.promotion?.charCodeAt(0)||0))) & 0xffffffffn)>>>0;
-  x ^= x<<13; x ^= x>>>17; x ^= x<<5;
-  return Math.round((((x>>>0)/0xffffffff)*2-1)*amplitude);
+
+function pseudoNoise(hash, move, amplitude) {
+  let x = Number((hash ^ BigInt(move.from * 131 + move.to * 17 + (move.promotion?.charCodeAt(0) || 0))) & 0xffffffffn) >>> 0;
+  x ^= x << 13;
+  x ^= x >>> 17;
+  x ^= x << 5;
+  return Math.round((((x >>> 0) / 0xffffffff) * 2 - 1) * amplitude);
 }
-function materialBalance(position,color) {
-  let score=0;
-  for(const piece of position.board) {
-    if(!piece) continue;
-    const value=PIECE_VALUES[typeOf(piece)]||0;
-    score+=colorOf(piece)===color?value:-value;
+
+function materialBalance(position, color) {
+  let score = 0;
+  for (const piece of position.board) {
+    if (!piece) continue;
+    const value = PIECE_VALUES[typeOf(piece)] || 0;
+    score += colorOf(piece) === color ? value : -value;
   }
+  return score;
+}
+
+function scoreToTT(score, ply) {
+  if (score > MATE_TT_BOUND) return score + ply;
+  if (score < -MATE_TT_BOUND) return score - ply;
+  return score;
+}
+
+function scoreFromTT(score, ply) {
+  if (score > MATE_TT_BOUND) return score - ply;
+  if (score < -MATE_TT_BOUND) return score + ply;
   return score;
 }
