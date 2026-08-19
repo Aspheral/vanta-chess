@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Position, moveToUci } from '../chess/position.js';
-import { SearchEngine } from './search-v2.js';
+import { SearchEngine } from './search-production.js';
 import { strengthConfig } from './personality.js';
 
 const performancePositions = [
