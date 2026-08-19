@@ -1,11 +1,12 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { ChessGame } from '../src/chess/game.js';
-import { moveToUci } from '../src/chess/position.js';
 import { SearchEngine as LegacySearch } from '../src/engine/search.js';
 import { SearchEngine as RepairedSearch } from '../src/engine/search-production.js';
 
-const MOVE_MS = Number(process.env.SELFPLAY_MOVE_MS || 80);
-const MAX_PLIES = Number(process.env.SELFPLAY_MAX_PLIES || 100);
+const MOVE_MS = Number(process.env.SELFPLAY_MOVE_MS || 180);
+const MAX_PLIES = Number(process.env.SELFPLAY_MAX_PLIES || 90);
+const START_CLOCK_MS = Number(process.env.SELFPLAY_CLOCK_MS || 600000);
+const REPAIRED_MAX_MS = Number(process.env.SELFPLAY_REPAIRED_MAX_MS || 500);
 const REPORT = process.env.SELFPLAY_REPORT || 'benchmarks/selfplay-loss-repair.json';
 
 const OPENINGS = [
@@ -45,7 +46,7 @@ function createEngine(kind) {
   return new Search({
     maxDepth: 6,
     moveTimeMs: MOVE_MS,
-    nodeLimit: 90000,
+    nodeLimit: 150000,
     selectionWindow: 32,
     evalNoise: 4,
   });
@@ -54,24 +55,37 @@ function createEngine(kind) {
 async function play(openingName, seed, repairedColor) {
   const game = setup(seed);
   const startedAt = game.cursor;
+  const clocks = { repaired: START_CLOCK_MS, legacy: START_CLOCK_MS };
   let repairedMs = 0, legacyMs = 0;
   let repairedDepth = 0, repairedMoves = 0, legacyDepth = 0, legacyMoves = 0;
   let repairedNodes = 0, legacyNodes = 0;
 
   while (game.cursor - startedAt < MAX_PLIES) {
     const status = game.status();
-    if (status.over) {
-      return finish(status.result, status.reason);
-    }
+    if (status.over) return finish(status.result, status.reason);
 
     const kind = game.position.turn === repairedColor ? 'repaired' : 'legacy';
     const engine = createEngine(kind);
-    const result = engine.search(game.position, kind === 'repaired'
-      ? { moveTimeMs: MOVE_MS, maxDepth: 6, maxMoveTimeMs: MOVE_MS, remainingMs: 600000 }
-      : { moveTimeMs: MOVE_MS, maxDepth: 6 });
+    const options = kind === 'repaired'
+      ? {
+          moveTimeMs: MOVE_MS,
+          maxDepth: 6,
+          maxMoveTimeMs: Math.min(REPAIRED_MAX_MS, Math.max(40, clocks.repaired - 5000)),
+          remainingMs: clocks.repaired,
+        }
+      : { moveTimeMs: Math.min(MOVE_MS, Math.max(40, clocks.legacy - 5000)), maxDepth: 6 };
+    const result = engine.search(game.position, options);
     if (!result.move) {
       const now = game.status();
       return finish(now.over ? now.result : '1/2-1/2', now.reason || 'no move');
+    }
+
+    clocks[kind] -= result.timeMs || 0;
+    if (clocks[kind] <= 0) {
+      const resultText = kind === 'repaired'
+        ? (repairedColor === 'w' ? '0-1' : '1-0')
+        : (repairedColor === 'w' ? '1-0' : '0-1');
+      return finish(resultText, `${kind} time forfeit`);
     }
 
     if (kind === 'repaired') {
@@ -97,6 +111,7 @@ async function play(openingName, seed, repairedColor) {
       reason,
       point: repairedPoint(result, repairedColor),
       plies: game.cursor - startedAt,
+      remainingMs: clocks,
       repaired: {
         moves: repairedMoves,
         averageDepth: repairedMoves ? repairedDepth / repairedMoves : 0,
@@ -142,9 +157,11 @@ const report = {
     games: games.length,
     openings: OPENINGS.map(([name, moves]) => ({name, moves})),
     alternatingColors: true,
-    moveTimeCapMs: MOVE_MS,
+    baseMoveTimeMs: MOVE_MS,
+    repairedCriticalMoveCapMs: REPAIRED_MAX_MS,
+    logicalStartClockMs: START_CLOCK_MS,
     maxPlies: MAX_PLIES,
-    note: 'Paired deterministic regression match. The confidence interval describes this sample score, not universal Elo.',
+    note: 'Paired deterministic scaled-rapid regression match with equal logical clocks. Repaired Vanta may spend more on volatile moves because dynamic time management is part of the tested change. This is not a universal Elo estimate.',
   },
   totals: {
     games: games.length,
