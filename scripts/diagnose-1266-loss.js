@@ -15,6 +15,11 @@ const cases = [
   { id: 'F-before-51-a3', fen: positionBeforeSan(parsed, 'a3', 1), suspect: null },
 ];
 
+const ponderCases = [
+  { id: 'ponder-after-8-e4', fen: positionAfterSan(parsed, 'e4', 1), actualOpponentMove: 'f5g6', actualVantaReply: 'c3d5' },
+  { id: 'ponder-after-16-Qh3-check', fen: positionAfterSan(parsed, 'Qh3+', 1), actualOpponentMove: 'd8d7', actualVantaReply: 'g5e6' },
+];
+
 function summarizeLine(line) {
   if (!line) return null;
   return {
@@ -30,6 +35,7 @@ const report = {
   generatedAt: new Date().toISOString(),
   commitHint: process.env.GITHUB_SHA || null,
   cases: [],
+  ponderCases: [],
 };
 
 for (const item of cases) {
@@ -61,6 +67,20 @@ for (const item of cases) {
     suspect: item.suspect,
     suspectDepth4: summarizeLine(suspectLine),
     rootDepth4Top: root.lines.slice(0, 10).map(summarizeLine),
+  });
+}
+
+for (const item of ponderCases) {
+  const position = Position.fromFEN(item.fen);
+  const engine = new SearchEngine();
+  const branches = engine.predictBranches(position, 4, { depth: 4, timeMs: 280 });
+  const hit = branches.find(branch => branch.opponentMove === item.actualOpponentMove) || null;
+  report.ponderCases.push({
+    ...item,
+    branches,
+    actualMoveWasPredicted: Boolean(hit),
+    cachedReplyMatchedGame: Boolean(hit && hit.engineMove === item.actualVantaReply),
+    matchingBranch: hit,
   });
 }
 
