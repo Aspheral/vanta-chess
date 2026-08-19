@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Position, moveToUci } from '../chess/position.js';
-import { SearchEngine } from './search.js';
+import { SearchEngine } from './search-v2.js';
 import { strengthConfig } from './personality.js';
 
 const performancePositions = [
@@ -50,11 +50,14 @@ const performanceRows = performancePositions.map(([name, fen]) => {
     name,
     bestMove: result.move ? moveToUci(result.move) : null,
     depth: result.depth,
+    selectiveDepth: result.selectiveDepth,
+    criticality: result.criticality,
     nodes: result.nodes,
     qnodes: result.qnodes,
     totalNodes,
     nodesPerSecond: result.nps,
     moveTimeMs: result.timeMs,
+    allocatedTimeMs: result.allocatedTimeMs,
     transpositionHits: result.ttHits,
     transpositionHitRate: result.nodes ? Number((result.ttHits / result.nodes * 100).toFixed(2)) : 0,
   };
@@ -75,6 +78,7 @@ const tactical = tacticalCases.map(testCase => {
     depth: result.depth,
     nodes: result.nodes + result.qnodes,
     timeMs: result.timeMs,
+    criticality: result.criticality,
   };
 });
 
@@ -95,6 +99,7 @@ const ponder = {
     opponentMove: branch.opponentMove,
     engineMove: branch.engineMove,
     depth: branch.depth,
+    criticality: branch.criticality,
     evaluation: branch.evaluation,
   })),
 };
