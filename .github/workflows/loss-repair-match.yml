@@ -1,0 +1,36 @@
+name: Vanta Loss Repair Match
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/engine/**'
+      - 'src/chess/**'
+      - 'scripts/selfplay-loss-repair.js'
+      - '.github/workflows/loss-repair-match.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selfplay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SELFPLAY_MOVE_MS: '80'
+      SELFPLAY_MAX_PLIES: '100'
+      SELFPLAY_REPORT: 'benchmarks/selfplay-loss-repair.json'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run 24 paired legacy-vs-repaired games
+        run: node scripts/selfplay-loss-repair.js
+      - name: Upload match report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vanta-loss-repair-selfplay
+          path: benchmarks/selfplay-loss-repair.json
+          if-no-files-found: error
