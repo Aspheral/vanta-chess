@@ -5,7 +5,7 @@ import { access } from 'node:fs/promises';
 import { ChessGame } from '../chess/game.js';
 import { WHITE, BLACK } from '../chess/constants.js';
 import { moveToUci } from '../chess/position.js';
-import { SearchEngine } from './search.js';
+import { SearchEngine } from './search-v2.js';
 import { repetitionExclusions } from './draw-policy.js';
 
 const MOVE_TIME_MS = Number(process.env.MOVE_TIME_MS || 650);
