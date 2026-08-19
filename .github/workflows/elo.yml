@@ -66,3 +66,5 @@ jobs:
           git add benchmarks/elo-latest.json
           git commit -m 'Record full Elo calibration' || true
           git push
+
+# Final production calibration: 650 ms, depth 6.
