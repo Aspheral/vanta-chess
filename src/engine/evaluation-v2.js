@@ -28,16 +28,19 @@ function openingDevelopmentFor(position, color) {
   const rights = color === WHITE ? ['K', 'Q'] : ['k', 'q'];
   const pawn = color === WHITE ? 'P' : 'p';
   const homePawnRow = color === WHITE ? 6 : 1;
-  let score = -undeveloped * 19;
+
+  // The base evaluator already rewards development. This layer is intentionally
+  // modest after reference testing showed that an earlier, larger bonus could
+  // bully Vanta away from tactically justified knight manoeuvres.
+  let score = -undeveloped * 8;
 
   const castled = color === WHITE ? [62, 58].includes(king) : [6, 2].includes(king);
-  if (castled) score += 38;
+  if (castled) score += 18;
   else if (king === homeKing) {
-    if (rights.some(r => position.castling.includes(r))) score += 9;
-    if (position.fullmove >= 8 && undeveloped <= 2) score -= 8;
-  } else if (position.fullmove <= 12) score -= 24;
+    if (rights.some(r => position.castling.includes(r))) score += 4;
+    if (position.fullmove >= 8 && undeveloped <= 2) score -= 3;
+  } else if (position.fullmove <= 12) score -= 10;
 
-  // Early flank-pawn motion is expensive when the army behind it is still asleep.
   if (undeveloped >= 2) {
     for (const file of [0, 1, 6, 7]) {
       let bestAdvance = 0;
@@ -46,24 +49,24 @@ function openingDevelopmentFor(position, color) {
         const advance = color === WHITE ? homePawnRow - row : row - homePawnRow;
         bestAdvance = Math.max(bestAdvance, advance);
       }
-      if (bestAdvance > 0) score -= bestAdvance * (file >= 6 ? 11 : 7);
+      if (bestAdvance > 0) score -= bestAdvance * (file >= 6 ? 5 : 3);
     }
   }
 
   if (color === WHITE) {
-    if (!position.board[61]) score += 8;
-    if (!position.board[62]) score += 8;
+    if (!position.board[61]) score += 3;
+    if (!position.board[62]) score += 3;
   } else {
-    if (!position.board[5]) score += 8;
-    if (!position.board[6]) score += 8;
+    if (!position.board[5]) score += 3;
+    if (!position.board[6]) score += 3;
   }
   return score;
 }
 
 // The base evaluator already builds a full attack map, counts safe king exits,
 // rays, shield integrity, nearby attackers, and loose pieces. This extra term is
-// intentionally cheap: it supplies the requested nonlinear accumulation without
-// rebuilding attack maps a second time at every leaf.
+// intentionally cheap: it supplies nonlinear accumulation without rebuilding
+// attack maps a second time at every leaf.
 function kingDanger(position, color) {
   const king = position.kingSquare(color);
   if (king < 0) return 1000;
@@ -182,12 +185,12 @@ export function personalityMoveBonus(position, move) {
   if (position.fullmove <= 12) {
     const undeveloped = undevelopedMinorCount(position, us);
     if (['n', 'b'].includes(type) && !isHomeMinorSquare(move.from, move.piece) && undeveloped > 0 && !tactical) {
-      bonus -= 18 + undeveloped * 9;
+      bonus -= 8 + undeveloped * 4;
     }
-    if (['n', 'b'].includes(type) && isHomeMinorSquare(move.from, move.piece) && !isHomeMinorSquare(move.to, move.piece)) bonus += 14;
+    if (['n', 'b'].includes(type) && isHomeMinorSquare(move.from, move.piece) && !isHomeMinorSquare(move.to, move.piece)) bonus += 8;
     if (type === 'p' && undeveloped >= 2) {
       const file = move.from % 8;
-      if ([0, 1, 6, 7].includes(file) && !tactical) bonus -= file >= 6 ? 18 : 11;
+      if ([0, 1, 6, 7].includes(file) && !tactical) bonus -= file >= 6 ? 8 : 5;
     }
   }
 
