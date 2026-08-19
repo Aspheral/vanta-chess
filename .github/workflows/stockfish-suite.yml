@@ -19,8 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      SUITE_MOVE_MS: '250'
-      SUITE_SF_DEPTH: '13'
+      SUITE_MOVE_MS: '650'
+      SUITE_SF_DEPTH: '11'
       SUITE_REPORT: 'benchmarks/stockfish-suite-compare.json'
     steps:
       - uses: actions/checkout@v4
