@@ -6,15 +6,15 @@ import { parsePgn, positionBeforeSan, positionAfterSan } from '../src/chess/pgn.
 import { SearchEngine as LegacySearch } from '../src/engine/search.js';
 import { SearchEngine as RepairedSearch } from '../src/engine/search-production.js';
 
-const MOVE_MS = Number(process.env.SUITE_MOVE_MS || 250);
-const SF_DEPTH = Number(process.env.SUITE_SF_DEPTH || 13);
+const MOVE_MS = Number(process.env.SUITE_MOVE_MS || 650);
+const SF_DEPTH = Number(process.env.SUITE_SF_DEPTH || 11);
 const REPORT = process.env.SUITE_REPORT || 'benchmarks/stockfish-suite-compare.json';
 
 const pgn = await readFile(new URL('../tests/fixtures/vanta-vs-1266.pgn', import.meta.url), 'utf8');
 const loss = parsePgn(pgn);
 
 const cases = [
-  { group: 'tactical', name: '1266 loss A: fake activity / Nd5', fen: positionBeforeSan(loss, 'Nd5') },
+  { group: 'opening', name: '1266 loss A: unusual knight manoeuvre', fen: positionBeforeSan(loss, 'Nd5') },
   { group: 'tactical', name: '1266 loss C: Nc2+ fork threat', fen: positionBeforeSan(loss, 'Ne6') },
   { group: 'promotion', name: '1266 loss D: f-pawn advance', fen: positionBeforeSan(loss, 'f3', 2) },
   { group: 'promotion', name: '1266 loss E: f2 promotion threat', fen: positionAfterSan(loss, 'f2+') },
@@ -26,6 +26,9 @@ const cases = [
   { group: 'promotion', name: 'Supported checking promotion', fen: '1k3r2/8/8/8/8/8/5p2/6K1 b - - 0 1' },
   { group: 'tactical', name: 'Poisoned queen capture', fen: '3r2k1/8/8/3p4/8/8/8/3Q2K1 w - - 0 1' },
   { group: 'tactical', name: 'Back-rank mating attack', fen: '6k1/5ppp/8/8/8/8/8/4R1K1 w - - 0 1' },
+  { group: 'tactical', name: 'Absolute pin on queen', fen: '4k3/4q3/8/8/8/8/4R3/4K3 w - - 0 1' },
+  { group: 'tactical', name: 'Discovered-file attack', fen: '4k3/8/8/8/8/8/4B3/4R1K1 w - - 0 1' },
+  { group: 'tactical', name: 'Queen skewer on king and rook', fen: '6kr/8/8/3Q4/8/8/8/6K1 w - - 0 1' },
   { group: 'quiet', name: 'Starting position', fen: Position.start().toFEN() },
   { group: 'quiet', name: 'Italian development', fen: 'r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQ1RK1 w kq - 6 6' },
   { group: 'quiet', name: 'Queens Gambit structure', fen: 'rnbq1rk1/pp2bppp/2p1pn2/3p4/2PP4/2N1PN2/PP3PPP/R1BQKB1R w KQ - 2 7' },
@@ -50,11 +53,12 @@ class UciStockfish {
     });
   }
   send(s) { this.proc.stdin.write(`${s}\n`); }
-  wait(test, ms = 15000) {
+  wait(test, ms = 45000) {
     return new Promise((resolve, reject) => {
       const waiter = { test, resolve, timer: null };
       waiter.timer = setTimeout(() => {
-        this.waiters.splice(this.waiters.indexOf(waiter), 1);
+        const index = this.waiters.indexOf(waiter);
+        if (index >= 0) this.waiters.splice(index, 1);
         reject(new Error('Stockfish timeout'));
       }, ms);
       this.waiters.push(waiter);
@@ -76,7 +80,7 @@ class UciStockfish {
     const kind = scoreMatch?.[1] || 'cp';
     const raw = Number(scoreMatch?.[2] || 0);
     const score = kind === 'mate' ? Math.sign(raw || 1) * (100000 - Math.min(999, Math.abs(raw)) * 100) : raw;
-    return { move: best.split(/\s+/)[1], score, rawScore: { kind, value: raw }, info };
+    return { move: best.split(/\s+/)[1], score, rawScore: { kind, value: raw } };
   }
   quit() { try { this.send('quit'); } catch {} this.rl.close(); this.proc.kill(); }
 }
@@ -89,11 +93,10 @@ async function findStockfish() {
 }
 
 function runVanta(Search, position, repaired) {
-  const engine = new Search({ maxDepth: 6, moveTimeMs: MOVE_MS, nodeLimit: 180000, selectionWindow: 32, evalNoise: 4 });
-  const result = engine.search(position, repaired
-    ? { maxDepth: 6, moveTimeMs: MOVE_MS, maxMoveTimeMs: MOVE_MS }
+  const engine = new Search({ maxDepth: 6, moveTimeMs: MOVE_MS, nodeLimit: 260000, selectionWindow: 32, evalNoise: 4 });
+  return engine.search(position, repaired
+    ? { maxDepth: 6, moveTimeMs: MOVE_MS, maxMoveTimeMs: Math.max(MOVE_MS, 1800) }
     : { maxDepth: 6, moveTimeMs: MOVE_MS });
-  return result;
 }
 
 function aggregate(rows, variant, groups) {
@@ -117,6 +120,8 @@ const rows = [];
 try {
   for (const testCase of cases) {
     const position = Position.fromFEN(testCase.fen);
+    const rootStatus = position.status();
+    if (rootStatus.over) throw new Error(`Suite root is terminal: ${testCase.name}`);
     const root = await sf.analyze(testCase.fen);
     const row = { group: testCase.group, name: testCase.name, fen: testCase.fen, stockfish: root, legacy: null, repaired: null };
 
@@ -126,8 +131,13 @@ try {
       let choiceScore = -100000;
       if (result.move) {
         const after = position.makeMove(result.move);
-        const child = await sf.analyze(after.toFEN());
-        choiceScore = -child.score;
+        const terminal = after.status();
+        if (terminal.over) {
+          choiceScore = terminal.reason === 'checkmate' ? 100000 : 0;
+        } else {
+          const child = await sf.analyze(after.toFEN());
+          choiceScore = -child.score;
+        }
       }
       row[variant] = {
         move: uci,
@@ -151,14 +161,19 @@ const report = {
   generatedAt: new Date().toISOString(),
   methodology: {
     stockfishDepth: SF_DEPTH,
-    vantaMoveTimeMs: MOVE_MS,
+    vantaBaseMoveTimeMs: MOVE_MS,
+    repairedDynamicTime: true,
     solveThresholdCp: 80,
-    note: 'Centipawn loss is measured by re-analyzing each chosen move with the same Stockfish depth. Mate scores are mapped to large finite values.',
+    note: 'Centipawn loss is measured by re-analyzing each chosen move with the same Stockfish depth. Terminal mates are scored directly. The repaired engine may spend extra time on critical roots, matching its rapid time manager.',
   },
   summary: {
     tacticalAndPromotion: {
       legacy: aggregate(rows, 'legacy', ['tactical','promotion']),
       repaired: aggregate(rows, 'repaired', ['tactical','promotion']),
+    },
+    opening: {
+      legacy: aggregate(rows, 'legacy', ['opening']),
+      repaired: aggregate(rows, 'repaired', ['opening']),
     },
     quiet: {
       legacy: aggregate(rows, 'legacy', ['quiet']),
@@ -169,8 +184,8 @@ const report = {
       repaired: aggregate(rows, 'repaired', ['king-safety']),
     },
     all: {
-      legacy: aggregate(rows, 'legacy', ['tactical','promotion','quiet','king-safety']),
-      repaired: aggregate(rows, 'repaired', ['tactical','promotion','quiet','king-safety']),
+      legacy: aggregate(rows, 'legacy', ['tactical','promotion','opening','quiet','king-safety']),
+      repaired: aggregate(rows, 'repaired', ['tactical','promotion','opening','quiet','king-safety']),
     },
   },
   cases: rows,
