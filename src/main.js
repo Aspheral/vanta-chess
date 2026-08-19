@@ -194,7 +194,7 @@ class VantaApp {
     const fen=this.game.position.toFEN();
     const excludeMoves=repetitionExclusions(this.game,knownScore);
     this.pendingPurpose='play';this.pendingFen=fen;this.state=STATES.ENGINE_SEARCHING;this.analysisArrow=null;this.render();
-    this.controller.search(fen,{moveTimeMs:350,maxDepth:5,excludeMoves});
+    this.controller.search(fen,{moveTimeMs:650,maxDepth:6,excludeMoves});
   }
 
   startAnalysis(){
