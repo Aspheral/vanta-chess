@@ -66,3 +66,5 @@ jobs:
           git add benchmarks/elo-latest.json
           git commit -m 'Record full Elo calibration' || true
           git push
+
+# Touching this workflow intentionally triggers the final calibration pass.
