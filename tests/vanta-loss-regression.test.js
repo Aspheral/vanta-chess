@@ -10,8 +10,6 @@ import { hasNearPromotion, staticExchangeEval, tacticalVolatility } from '../src
 const pgn = readFileSync(new URL('./fixtures/vanta-vs-1266.pgn', import.meta.url), 'utf8');
 const parsed = parsePgn(pgn);
 
-// These FENs are generated from the source PGN at test time. The SAN parser is
-// the source of truth, preventing hand-entered fixture drift.
 const regressionFens = Object.freeze({
   A: positionBeforeSan(parsed, 'Nd5'),
   B: positionAfterSan(parsed, 'Nxe4', 1),
@@ -44,10 +42,6 @@ test('position B: the engine naturally generates Qxd5 after the tempting Nxe4 re
   const queenTakes = afterRecapture.moveFromUci('d8d5');
   assert.ok(queenTakes, 'Qxd5 must be a legal generated tactical response');
   const settled = afterRecapture.makeMove(queenTakes);
-  // Nxe4 temporarily wins Black's knight; ...Qxd5 then removes White's other
-  // knight. The original prompt called this a clean minor-piece loss, but the
-  // actual swap is closer to a pawn/material-and-development concession. What
-  // matters here is that Vanta must see the recapture's apparent gain collapse.
   assert.ok(evaluate(settled, 'w') < evaluate(afterRecapture, 'w') - 180,
     `after Nxe4=${evaluate(afterRecapture, 'w')}, after Qxd5=${evaluate(settled, 'w')}`);
 });
@@ -87,7 +81,7 @@ test('position F: advancing the distant passed a-pawn sharply increases urgency'
 });
 
 test('quiescence searches a quiet checking promotion instead of stopping at f2', () => {
-  const p = Position.fromFEN('1k3r2/8/8/8/8/8/5p2/6K1 b - - 0 1');
+  const p = Position.fromFEN('1k3r2/8/8/8/8/8/5p2/7K b - - 0 1');
   const engine = new SearchEngine({ nodeLimit: 100000, enableBlunderGuard: false });
   engine.resetStats();
   engine.criticality = 100;
@@ -115,7 +109,7 @@ test('volatile promotion positions receive more budget than a quiet starting pos
   const quiet = new SearchEngine({ maxDepth: 1, moveTimeMs: 180, nodeLimit: 30000, enableBlunderGuard: false })
     .search(Position.start(), { maxDepth: 1, moveTimeMs: 180 });
   const volatile = new SearchEngine({ maxDepth: 1, moveTimeMs: 180, nodeLimit: 30000, enableBlunderGuard: false })
-    .search(Position.fromFEN('1k3r2/8/8/8/8/8/5p2/6K1 b - - 0 1'), { maxDepth: 1, moveTimeMs: 180 });
+    .search(Position.fromFEN('1k3r2/8/8/8/8/8/5p2/7K b - - 0 1'), { maxDepth: 1, moveTimeMs: 180 });
   assert.ok(volatile.criticality > quiet.criticality);
   assert.ok(volatile.allocatedTimeMs > quiet.allocatedTimeMs,
     `quiet=${quiet.allocatedTimeMs}, volatile=${volatile.allocatedTimeMs}`);
