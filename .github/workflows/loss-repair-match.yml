@@ -18,8 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      SELFPLAY_MOVE_MS: '80'
-      SELFPLAY_MAX_PLIES: '100'
+      SELFPLAY_MOVE_MS: '180'
+      SELFPLAY_REPAIRED_MAX_MS: '500'
+      SELFPLAY_CLOCK_MS: '600000'
+      SELFPLAY_MAX_PLIES: '90'
       SELFPLAY_REPORT: 'benchmarks/selfplay-loss-repair.json'
     steps:
       - uses: actions/checkout@v4
