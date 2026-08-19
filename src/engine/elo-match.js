@@ -8,7 +8,7 @@ import { moveToUci } from '../chess/position.js';
 import { SearchEngine } from './search.js';
 import { repetitionExclusions } from './draw-policy.js';
 
-const MOVE_TIME_MS = Number(process.env.MOVE_TIME_MS || 350);
+const MOVE_TIME_MS = Number(process.env.MOVE_TIME_MS || 650);
 const MAX_PLIES = Number(process.env.MAX_PLIES || 160);
 const TARGETS = (process.env.ELO_TARGETS || '1320,1450,1600,1750').split(',').map(Number).filter(Number.isFinite);
 const REPORT_PATH = process.env.ELO_REPORT || 'benchmarks/elo-ci.json';
@@ -112,7 +112,7 @@ function setupGame(opening) {
 function vantaMove(game) {
   const run = excludeMoves => new SearchEngine().search(game.position, {
     moveTimeMs: MOVE_TIME_MS,
-    maxDepth: 5,
+    maxDepth: 6,
     excludeMoves,
   });
   let result = run([]);
@@ -256,7 +256,7 @@ async function main() {
       methodology: {
         reference: stockfishInfo,
         equalMoveTimeMs: MOVE_TIME_MS,
-        vantaPreset: { targetElo: 1500, maxDepth: 5, nodeLimit: 180000 },
+        vantaPreset: { targetElo: 1500, maxDepth: 6, nodeLimit: 260000 },
         targets,
         openings: OPENINGS,
         gamesPerTarget: OPENINGS.length * 2,
