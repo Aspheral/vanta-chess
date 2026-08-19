@@ -1,7 +1,8 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { parsePgn, positionBeforeSan, positionAfterSan } from '../src/chess/pgn.js';
 import { Position, moveToUci } from '../src/chess/position.js';
-import { SearchEngine } from '../src/engine/search.js';
+import { SearchEngine as LegacySearchEngine } from '../src/engine/search.js';
+import { SearchEngine } from '../src/engine/search-production.js';
 
 const pgn = await readFile(new URL('../tests/fixtures/vanta-vs-1266.pgn', import.meta.url), 'utf8');
 const parsed = parsePgn(pgn);
@@ -19,6 +20,30 @@ const ponderCases = [
   { id: 'ponder-after-8-e4', fen: positionAfterSan(parsed, 'e4', 1), actualOpponentMove: 'f5g6', actualVantaReply: 'c3d5' },
   { id: 'ponder-after-16-Qh3-check', fen: positionAfterSan(parsed, 'Qh3+', 1), actualOpponentMove: 'd8d7', actualVantaReply: 'g5e6' },
 ];
+
+function summarizeResult(result) {
+  return {
+    chosen: result.move ? moveToUci(result.move) : null,
+    score: result.score,
+    objectiveScore: result.objectiveScore,
+    depth: result.depth,
+    selectiveDepth: result.selectiveDepth ?? result.depth,
+    nodes: result.nodes,
+    qnodes: result.qnodes,
+    ttHits: result.ttHits,
+    ttCutoffs: result.ttCutoffs ?? 0,
+    cutoffs: result.cutoffs,
+    lmrReductions: result.lmrReductions ?? 0,
+    qPrunes: result.qPrunes ?? 0,
+    criticality: result.criticality ?? null,
+    allocatedTimeMs: result.allocatedTimeMs ?? null,
+    timeMs: result.timeMs,
+    pv: result.pv.map(moveToUci),
+    depthTrace: result.depthTrace ?? [],
+    guard: result.guard ?? null,
+    candidates: result.candidates,
+  };
+}
 
 function summarizeLine(line) {
   if (!line) return null;
@@ -40,10 +65,14 @@ const report = {
 
 for (const item of cases) {
   const position = Position.fromFEN(item.fen);
-  const engine = new SearchEngine({ maxDepth: 6, moveTimeMs: 650, nodeLimit: 260000 });
-  const result = engine.search(position, { maxDepth: 6, moveTimeMs: 650 });
 
-  const rootEngine = new SearchEngine({ maxDepth: 4, moveTimeMs: 5000, nodeLimit: 1_000_000, selectionWindow: 0, evalNoise: 0 });
+  const legacy = new LegacySearchEngine({ maxDepth: 6, moveTimeMs: 650, nodeLimit: 260000 });
+  const before = legacy.search(position, { maxDepth: 6, moveTimeMs: 650 });
+
+  const repaired = new SearchEngine({ maxDepth: 6, moveTimeMs: 650, nodeLimit: 260000 });
+  const after = repaired.search(position, { maxDepth: 6, moveTimeMs: 650 });
+
+  const rootEngine = new LegacySearchEngine({ maxDepth: 4, moveTimeMs: 5000, nodeLimit: 1_000_000, selectionWindow: 0, evalNoise: 0 });
   rootEngine.resetStats();
   rootEngine.start = 0;
   rootEngine.deadline = 0;
@@ -53,34 +82,39 @@ for (const item of cases) {
   report.cases.push({
     id: item.id,
     fen: item.fen,
-    chosen: result.move ? moveToUci(result.move) : null,
-    score: result.score,
-    objectiveScore: result.objectiveScore,
-    depth: result.depth,
-    nodes: result.nodes,
-    qnodes: result.qnodes,
-    ttHits: result.ttHits,
-    cutoffs: result.cutoffs,
-    timeMs: result.timeMs,
-    pv: result.pv.map(moveToUci),
-    candidates: result.candidates,
     suspect: item.suspect,
-    suspectDepth4: summarizeLine(suspectLine),
-    rootDepth4Top: root.lines.slice(0, 10).map(summarizeLine),
+    before: summarizeResult(before),
+    after: summarizeResult(after),
+    legacySuspectDepth4: summarizeLine(suspectLine),
+    legacyRootDepth4Top: root.lines.slice(0, 10).map(summarizeLine),
   });
 }
 
 for (const item of ponderCases) {
   const position = Position.fromFEN(item.fen);
-  const engine = new SearchEngine();
-  const branches = engine.predictBranches(position, 4, { depth: 4, timeMs: 280 });
-  const hit = branches.find(branch => branch.opponentMove === item.actualOpponentMove) || null;
+  const legacy = new LegacySearchEngine();
+  const legacyBranches = legacy.predictBranches(position, 4, { depth: 4, timeMs: 280 });
+  const legacyHit = legacyBranches.find(branch => branch.opponentMove === item.actualOpponentMove) || null;
+
+  const repaired = new SearchEngine();
+  const repairedBranches = repaired.predictBranches(position, 4, { depth: 4, timeMs: 280 });
+  const repairedHit = repairedBranches.find(branch => branch.opponentMove === item.actualOpponentMove) || null;
+
   report.ponderCases.push({
     ...item,
-    branches,
-    actualMoveWasPredicted: Boolean(hit),
-    cachedReplyMatchedGame: Boolean(hit && hit.engineMove === item.actualVantaReply),
-    matchingBranch: hit,
+    legacy: {
+      branches: legacyBranches,
+      actualMoveWasPredicted: Boolean(legacyHit),
+      cachedReplyMatchedGame: Boolean(legacyHit && legacyHit.engineMove === item.actualVantaReply),
+      matchingBranch: legacyHit,
+    },
+    repaired: {
+      branches: repairedBranches,
+      actualMoveWasPredicted: Boolean(repairedHit),
+      suggestedReplyMatchedGame: Boolean(repairedHit && repairedHit.engineMove === item.actualVantaReply),
+      matchingBranch: repairedHit,
+      note: 'Repaired controller never auto-plays this suggestion; full move search validates every response.',
+    },
   });
 }
 
