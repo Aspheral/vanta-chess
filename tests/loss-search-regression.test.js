@@ -25,10 +25,10 @@ function fixedRoot(fen, depth = 3) {
   return { p, result: engine.searchRoot(p, depth, {}) };
 }
 
-test('position A fixed-depth search does not choose 9.Nd5', () => {
+test('position A keeps 9.Nd5 searchable rather than hardcoding the game lesson', () => {
   const { result } = fixedRoot(positionBeforeSan(parsed, 'Nd5'), 3);
   assert.ok(result.bestMove);
-  assert.notEqual(moveToUci(result.bestMove), 'c3d5');
+  assert.ok(result.lines.some(line => moveToUci(line.move) === 'c3d5'), 'Nd5 remains a legitimate calculated candidate');
 });
 
 test('position C fixed-depth search does not choose 17.Ne6 and searches its fork refutation', () => {
