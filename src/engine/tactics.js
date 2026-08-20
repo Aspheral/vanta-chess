@@ -53,6 +53,31 @@ export function hasNearPromotion(position, color = null) {
   return false;
 }
 
+function advancedPasserVolatility(position) {
+  let score = 0;
+  for (let sq = 0; sq < 64; sq++) {
+    const piece = position.board[sq];
+    if (!piece || typeOf(piece) !== 'p') continue;
+    const color = colorOf(piece);
+    const enemyPawn = color === 'w' ? 'p' : 'P';
+    const [row, file] = rowCol(sq);
+    const dir = color === 'w' ? -1 : 1;
+    const progress = color === 'w' ? 6 - row : row - 1;
+    if (progress < 3) continue;
+    let passed = true;
+    for (const f of [file - 1, file, file + 1]) {
+      if (f < 0 || f > 7) continue;
+      for (let r = row + dir; r >= 0 && r < 8; r += dir) {
+        if (position.board[r * 8 + f] === enemyPawn) { passed = false; break; }
+      }
+      if (!passed) break;
+    }
+    if (!passed) continue;
+    score += progress >= 5 ? 28 : progress === 4 ? 18 : 12;
+  }
+  return Math.min(36, score);
+}
+
 export function hasLooseMajor(position, color = position.turn) {
   const enemy = opposite(color);
   for (let sq = 0; sq < 64; sq++) {
@@ -119,6 +144,7 @@ export function rootTacticalRisk(position, move, seeMemo = new Map()) {
 export function cheapVolatility(position) {
   let score = position.isInCheck() ? 34 : 0;
   if (hasNearPromotion(position)) score += 24;
+  score += advancedPasserVolatility(position);
   if (hasLooseMajor(position, position.turn)) score += 18;
   if (hasLooseMajor(position, opposite(position.turn))) score += 12;
   const king = position.kingSquare(position.turn);
