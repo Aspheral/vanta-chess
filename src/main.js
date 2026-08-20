@@ -4,8 +4,10 @@ import { Position } from './chess/position.js';
 import { WHITE, BLACK, colorOf, indexToSquare, squareToIndex } from './chess/constants.js';
 import { EngineController } from './engine/controller.js';
 import { repetitionExclusions, shouldRejectRepetitionMove } from './engine/draw-policy.js';
+import { positionCriticality } from './engine/tactics.js';
 import { BoardView } from './ui/board.js';
 import { BRANCH_COLORS } from './ui/arrows.js';
+import { relocateEditorPiece } from './ui/editor-position.js';
 
 const STATES=Object.freeze({IDLE:'IDLE',PLAYER_TURN:'PLAYER_TURN',ENGINE_SEARCHING:'ENGINE_SEARCHING',PONDERING:'PONDERING',POSITION_EDITING:'POSITION_EDITING',ANALYSIS:'ANALYSIS',GAME_OVER:'GAME_OVER'});
 const GLYPHS={K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
@@ -30,12 +32,18 @@ class VantaApp {
     this.editorTool='P';
     this.editorPosition=this.game.position.clone();
     this.editorWarning='';
+    this.engineClockMs=600000;
+    this.engineIncrementMs=0;
     this.controller=new EngineController(new URL('./engine/worker.js',import.meta.url));
     this.controller.addEventListener('search-result',e=>this.onSearchResult(e.detail));
     this.controller.addEventListener('ponder-result',e=>this.onPonderResult(e.detail));
     this.controller.addEventListener('engine-error',e=>{this.state=STATES.IDLE;this.setBanner(`Engine error: ${e.detail}`);this.render();});
     this.renderSkeleton();
-    this.board=new BoardView(this.boardRoot,{onMoveRequest:(f,t,m)=>this.onMoveRequest(f,t,m),onEditorSquare:i=>this.onEditorSquare(i)});
+    this.board=new BoardView(this.boardRoot,{
+      onMoveRequest:(f,t,m)=>this.onMoveRequest(f,t,m),
+      onEditorSquare:i=>this.onEditorSquare(i),
+      onEditorMove:(f,t)=>this.onEditorMove(f,t),
+    });
     this.render();
   }
 
@@ -62,6 +70,7 @@ class VantaApp {
   newGame(color=WHITE){
     this.controller.cancel();
     this.game.reset(); this.playerColor=color; this.orientation=color; this.manualFlip=false; this.mode='play';
+    this.engineClockMs=600000;
     this.branches=[];this.analysisArrow=null;this.engineInfo=null;this.highlightBranch=null;
     this.state=this.game.position.turn===this.playerColor?STATES.PLAYER_TURN:STATES.ENGINE_SEARCHING;
     this.render();
@@ -103,7 +112,7 @@ class VantaApp {
   startFromEditor(){
     const errors=this.editorPosition.validate();
     if(errors.length){this.editorWarning=errors.join(' ');this.render();return;}
-    this.game.reset(this.editorPosition.toFEN()); this.mode='play'; this.state=this.game.position.turn===this.playerColor?STATES.PLAYER_TURN:STATES.ENGINE_SEARCHING; this.editorWarning='';this.render();
+    this.game.reset(this.editorPosition.toFEN()); this.mode='play'; this.engineClockMs=600000; this.state=this.game.position.turn===this.playerColor?STATES.PLAYER_TURN:STATES.ENGINE_SEARCHING; this.editorWarning='';this.render();
     if(this.game.position.turn!==this.playerColor) this.startEngineMove();
   }
 
@@ -111,6 +120,12 @@ class VantaApp {
     const board=[...this.editorPosition.board];
     board[index]=this.editorTool==='erase'?null:this.editorTool;
     this.editorPosition=new Position({board,turn:this.editorPosition.turn,castling:this.editorPosition.castling,epSquare:this.editorPosition.epSquare,halfmove:this.editorPosition.halfmove,fullmove:this.editorPosition.fullmove});
+    this.render();
+  }
+
+  onEditorMove(from,to){
+    this.editorPosition=relocateEditorPiece(this.editorPosition,from,to);
+    this.editorWarning='';
     this.render();
   }
 
@@ -128,7 +143,7 @@ class VantaApp {
     try{
       const p=Position.fromFEN(raw.trim());
       if(intoEditor){this.editorPosition=p;this.editorWarning='';this.render();}
-      else {this.controller.cancel();this.game.reset(p.toFEN());this.branches=[];this.analysisArrow=null;this.state=this.mode==='analysis'?STATES.ANALYSIS:(p.turn===this.playerColor?STATES.PLAYER_TURN:STATES.ENGINE_SEARCHING);this.render(); if(this.mode==='analysis')this.startAnalysis();else if(p.turn!==this.playerColor)this.startEngineMove();}
+      else {this.controller.cancel();this.game.reset(p.toFEN());this.engineClockMs=600000;this.branches=[];this.analysisArrow=null;this.state=this.mode==='analysis'?STATES.ANALYSIS:(p.turn===this.playerColor?STATES.PLAYER_TURN:STATES.ENGINE_SEARCHING);this.render(); if(this.mode==='analysis')this.startAnalysis();else if(p.turn!==this.playerColor)this.startEngineMove();}
     }catch(err){this.editorWarning=err.message;this.render();}
   }
 
@@ -179,10 +194,14 @@ class VantaApp {
     if(status.over){this.state=STATES.GAME_OVER;this.render();return;}
     if(this.mode==='analysis'){this.state=STATES.ANALYSIS;this.render();this.startAnalysis();return;}
     this.state=STATES.ENGINE_SEARCHING; this.render();
-    if(ponderHit){
+
+    // Ponder hits stay instant in quiet positions. Tactical positions get a
+    // fresh rapid search so an old shallow branch cannot become a blunder.
+    const critical=positionCriticality(this.game.position)>=45;
+    if(ponderHit&&!critical){
       const planned=this.game.position.moveFromUci(ponderHit.engineMove);
       if(planned){
-        this.engineInfo={score:ponderHit.evaluation,objectiveScore:ponderHit.evaluation,depth:ponderHit.depth,nodes:0,qnodes:0,ttHits:0,timeMs:0,nps:0,pv:ponderHit.continuation.slice(1),ponderHit:true,candidates:[]};
+        this.engineInfo={score:ponderHit.evaluation,objectiveScore:ponderHit.evaluation,depth:ponderHit.depth,nodes:0,qnodes:0,ttHits:0,timeMs:0,nps:0,pv:ponderHit.continuation.slice(1),ponderHit:true,candidates:[],criticality:0};
         queueMicrotask(()=>this.applyEngineMove(planned,true)); return;
       }
     }
@@ -194,12 +213,12 @@ class VantaApp {
     const fen=this.game.position.toFEN();
     const excludeMoves=repetitionExclusions(this.game,knownScore);
     this.pendingPurpose='play';this.pendingFen=fen;this.state=STATES.ENGINE_SEARCHING;this.analysisArrow=null;this.render();
-    this.controller.search(fen,{moveTimeMs:650,maxDepth:6,excludeMoves});
+    this.controller.search(fen,{remainingTimeMs:this.engineClockMs,incrementMs:this.engineIncrementMs,maxDepth:6,excludeMoves});
   }
 
   startAnalysis(){
     const fen=this.game.position.toFEN();this.pendingPurpose='analysis';this.pendingFen=fen;this.state=STATES.ANALYSIS;this.render();
-    this.controller.search(fen,{moveTimeMs:450,maxDepth:6});
+    this.controller.search(fen,{moveTimeMs:650,maxDepth:6});
   }
 
   onSearchResult(result){
@@ -207,6 +226,9 @@ class VantaApp {
     this.engineInfo=result;
     if(this.pendingPurpose==='analysis'){
       this.analysisArrow=result.move;this.state=STATES.ANALYSIS;this.render();return;
+    }
+    if(this.pendingPurpose==='play'){
+      this.engineClockMs=Math.max(0,this.engineClockMs-(result.timeMs||0)+this.engineIncrementMs);
     }
     if(this.pendingPurpose==='play'&&result.move){
       const m=this.game.position.moveFromUci(result.move);
@@ -233,7 +255,7 @@ class VantaApp {
     if(status.over){this.state=STATES.GAME_OVER;this.render();return;}
     this.state=STATES.PONDERING;this.render();
     const fen=this.game.position.toFEN();
-    this.controller.ponder(fen,4,{depth:4,timeMs:280});
+    this.controller.ponder(fen,4,{depth:4,timeMs:300});
   }
 
   onPonderResult(branches){
@@ -243,7 +265,7 @@ class VantaApp {
     clearTimeout(this.ponderTimer);
     this.ponderTimer=setTimeout(()=>{
       if(this.mode==='play'&&this.game.position.toFEN()===fen&&this.game.position.turn===this.playerColor&&this.controller.ponderFen===fen) {
-        this.controller.refinePonder(fen,4,{depth:5,timeMs:900});
+        this.controller.refinePonder(fen,4,{depth:5,timeMs:950});
       }
     },35);
   }
@@ -282,7 +304,7 @@ class VantaApp {
   }
 
   statusText(){
-    if(this.mode==='editing')return 'Position editor';
+    if(this.mode==='editing')return 'Position editor · drag pieces to relocate';
     const status=this.game.status();
     if(status.over)return `${status.result} · ${status.reason}`;
     if(this.state===STATES.ENGINE_SEARCHING)return 'Vanta is calculating';
@@ -301,13 +323,13 @@ class VantaApp {
     const history=this.game.moveRows();
     const historyHtml=history.length?history.map(r=>`<div class="move-row"><span class="move-no">${r.move}.</span><span class="move-cell">${r.white}</span><span class="move-cell">${r.black}</span></div>`).join(''):'<div class="empty">No moves yet.</div>';
     const candidates=this.mode==='analysis'&&info?.candidates?.length?`<div class="candidate-strip">${info.candidates.slice(0,5).map((c,i)=>`<span><b>${i+1}</b> ${c.uci} <em>${this.formatEval(this.whitePerspective(c.score,this.pendingFen))}</em></span>`).join('')}</div>`:'';
-    let html=`<section class="panel"><div class="panel-head"><span class="panel-title">Engine</span><span class="panel-sub">target ≈ 1500 Elo</span></div><div class="engine-card"><div class="eval-row"><div class="eval">${evalText}</div><div class="thinking">${this.state===STATES.ENGINE_SEARCHING?'searching':this.state===STATES.PONDERING?'pondering':info?.ponderHit?'ponder hit':'ready'}</div></div><div class="metrics"><div class="metric"><b>${info?.depth??0}</b><span>depth</span></div><div class="metric"><b>${this.compact(info?.nodes??0)}</b><span>nodes</span></div><div class="metric"><b>${this.compact(info?.nps??0)}</b><span>nps</span></div><div class="metric"><b>${info?.timeMs??0} ms</b><span>time</span></div></div><div class="pv">${pv}</div>${candidates}</div>${status?.over?`<div class="game-result">${this.resultText(status)}</div>`:''}</section>
+    let html=`<section class="panel"><div class="panel-head"><span class="panel-title">Engine</span><span class="panel-sub">adaptive rapid · calculated aggression</span></div><div class="engine-card"><div class="eval-row"><div class="eval">${evalText}</div><div class="thinking">${this.state===STATES.ENGINE_SEARCHING?'searching':this.state===STATES.PONDERING?'pondering':info?.ponderHit?'ponder hit':'ready'}</div></div><div class="metrics"><div class="metric"><b>${info?.depth??0}</b><span>depth</span></div><div class="metric"><b>${this.compact(info?.nodes??0)}</b><span>nodes</span></div><div class="metric"><b>${this.compact(info?.nps??0)}</b><span>nps</span></div><div class="metric"><b>${info?.timeMs??0} ms</b><span>time</span></div></div><div class="pv">${pv}</div>${candidates}</div>${status?.over?`<div class="game-result">${this.resultText(status)}</div>`:''}</section>
     <section class="panel"><div class="panel-head"><span class="panel-title">Prediction map</span><span class="panel-sub">if this → then this</span></div><div class="branches">${branchHtml}</div><div class="toggle-row"><span>Prediction arrows</span><button class="switch ${this.predictionArrows?'on':''}" id="arrowToggle"><span></span></button></div></section>
     <section class="panel"><div class="panel-head"><span class="panel-title">Move history</span><span class="panel-sub">SAN</span></div><div class="history">${historyHtml}</div></section>`;
     html+=this.mode==='editing'?this.editorPanel():this.controlPanel();
     if(this.debug&&info) {
       const ponder=this.controller.getPonderStats();
-      html+=`<section class="panel"><div class="panel-head"><span class="panel-title">Debug</span></div><div class="debug">qnodes ${info.qnodes}\ntt hits ${info.ttHits}\ncutoffs ${info.cutoffs??0}\nponder hits ${ponder.hits}\nponder misses ${ponder.misses}\nobjective ${info.objectiveScore}\nselected ${info.score}\n${(info.candidates||[]).map(c=>`${c.uci} ${c.score} p:${c.personality}`).join('\n')}</div></section>`;
+      html+=`<section class="panel"><div class="panel-head"><span class="panel-title">Debug</span></div><div class="debug">qnodes ${info.qnodes}\ntt hits ${info.ttHits}\ncutoffs ${info.cutoffs??0}\ncriticality ${info.criticality??0}\nsoft ${info.softTimeMs??0} ms\nhard ${info.hardTimeMs??0} ms\nunstable ${Boolean(info.unstable)}\nroot risk ${info.selectedRisk??0}\nengine clock ${Math.round(this.engineClockMs/1000)} s\nponder hits ${ponder.hits}\nponder misses ${ponder.misses}\nobjective ${info.objectiveScore}\nselected ${info.score}\n${(info.candidates||[]).map(c=>`${c.uci} ${c.score} p:${c.personality}`).join('\n')}</div></section>`;
     }
     this.sideRoot.innerHTML=html;
     this.bindSide();
@@ -324,7 +346,7 @@ class VantaApp {
 
   editorPanel(){
     const p=this.editorPosition;
-    return `<section class="panel"><div class="panel-head"><span class="panel-title">Position editor</span><span class="panel-sub">free placement</span></div><div class="editor"><div class="palette">${['K','Q','R','B','N','P','k','q','r','b','n','p','erase'].map(x=>`<button class="${this.editorTool===x?'active':''}" data-tool="${x}">${x==='erase'?'×':GLYPHS[x]}</button>`).join('')}</div>
+    return `<section class="panel"><div class="panel-head"><span class="panel-title">Position editor</span><span class="panel-sub">drag pieces or place from palette</span></div><div class="editor"><div class="palette">${['K','Q','R','B','N','P','k','q','r','b','n','p','erase'].map(x=>`<button class="${this.editorTool===x?'active':''}" data-tool="${x}">${x==='erase'?'×':GLYPHS[x]}</button>`).join('')}</div>
       <div class="editor-row"><div class="field"><label>Side to move</label><select id="editorTurn"><option value="w" ${p.turn==='w'?'selected':''}>White</option><option value="b" ${p.turn==='b'?'selected':''}>Black</option></select></div><div class="field"><label>En passant</label><input id="editorEp" value="${p.epSquare==null?'-':indexToSquare(p.epSquare)}" /></div></div>
       <div class="checks">${['K','Q','k','q'].map(x=>`<label><input type="checkbox" id="castle_${x}" ${p.castling.includes(x)?'checked':''}> ${x}</label>`).join('')}</div>
       <div class="editor-row"><button class="btn" id="applyMeta">Apply rights</button><button class="btn" id="clearBoard">Clear board</button></div>

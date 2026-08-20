@@ -2,9 +2,14 @@ import { FLAGS, moveToUci } from '../chess/position.js';
 import { PIECE_VALUES, colorOf, typeOf } from '../chess/constants.js';
 import { evaluate, personalityMoveBonus, MATE_SCORE } from './evaluation.js';
 import { strengthConfig, VANTA_PERSONALITY } from './personality.js';
+import {
+  staticExchangeEval, rootTacticalRisk, cheapVolatility, positionCriticality,
+  hasNearPromotion, allocateRapidTime,
+} from './tactics.js';
 
 const INF = 1_000_000;
 const MATE_TT_BOUND = MATE_SCORE - 1000;
+const MATE_RISK = 99000;
 
 export class SearchEngine {
   constructor(config = {}) {
@@ -14,6 +19,7 @@ export class SearchEngine {
     this.killers = Array.from({ length: 64 }, () => [null, null]);
     this.rootOrder = [];
     this.evalCache = new Map();
+    this.seeMemo = new Map();
     this.resetStats();
   }
 
@@ -24,8 +30,10 @@ export class SearchEngine {
     this.cutoffs = 0;
     this.start = 0;
     this.deadline = 0;
+    this.softDeadline = 0;
     this.stopped = false;
     this.evalCache.clear();
+    this.seeMemo.clear();
   }
 
   stop() { this.stopped = true; }
@@ -55,14 +63,31 @@ export class SearchEngine {
   search(position, options = {}) {
     this.resetStats();
     this.start = performanceNow();
-    const moveTimeMs = options.moveTimeMs ?? this.config.moveTimeMs;
-    this.deadline = this.start + moveTimeMs;
+
+    let timing;
+    if (options.remainingTimeMs != null) {
+      timing = allocateRapidTime(position, options.remainingTimeMs, options.incrementMs || 0);
+    } else {
+      const moveTimeMs = options.moveTimeMs ?? this.config.moveTimeMs;
+      timing = {
+        criticality: positionCriticality(position),
+        softTimeMs: options.softTimeMs ?? Math.max(40, Math.floor(moveTimeMs * 0.72)),
+        hardTimeMs: options.hardTimeMs ?? moveTimeMs,
+        reserveMs: 0,
+      };
+    }
+
+    this.softDeadline = this.start + timing.softTimeMs;
+    this.deadline = this.start + timing.hardTimeMs;
     const maxDepth = options.maxDepth ?? this.config.maxDepth;
 
     let best = null;
     let partial = null;
     let completedDepth = 0;
     let rootLines = [];
+    const iterations = [];
+    let previousIteration = null;
+    let unstable = true;
 
     for (let depth = 1; depth <= maxDepth; depth++) {
       const result = this.searchRoot(position, depth, options);
@@ -73,9 +98,23 @@ export class SearchEngine {
         completedDepth = depth;
         rootLines = result.lines;
         this.rootOrder = result.lines.map(line => moveToUci(line.move));
+
+        const exact = result.lines.filter(line => line.exact !== false).sort((a, b) => b.score - a.score);
+        const bestUci = moveToUci(result.bestMove);
+        const secondScore = exact.length > 1 ? exact[1].score : result.score - 999;
+        const gap = result.score - secondScore;
+        const item = { depth, bestMove: bestUci, score: result.score, gap };
+        iterations.push(item);
+        unstable = !previousIteration
+          || previousIteration.bestMove !== bestUci
+          || Math.abs(previousIteration.score - result.score) >= 65
+          || gap < 28;
+        previousIteration = item;
       }
+
       if (Math.abs(result.score) >= MATE_SCORE - 1000) break;
       if (this.timeUp()) break;
+      if (performanceNow() >= this.softDeadline && !unstable) break;
     }
 
     const elapsed = Math.max(1, performanceNow() - this.start);
@@ -116,11 +155,18 @@ export class SearchEngine {
       cutoffs: this.cutoffs,
       timeMs: Math.round(elapsed),
       nps: Math.round((this.nodes + this.qnodes) * 1000 / elapsed),
+      criticality: timing.criticality,
+      softTimeMs: timing.softTimeMs,
+      hardTimeMs: timing.hardTimeMs,
+      unstable,
+      iterations,
+      selectedRisk: chosen.risk ?? 0,
       candidates: candidateLines.slice(0, 6).map(x => ({
         uci: moveToUci(x.move),
         score: x.score,
         pv: x.pv.map(moveToUci),
         personality: x.personality || 0,
+        exact: x.exact !== false,
       })),
     };
   }
@@ -235,7 +281,7 @@ export class SearchEngine {
     }
 
     if (position.isInsufficientMaterial()) return 0;
-    if (depth <= 0) return this.quiescence(position, alpha, beta, ply);
+    if (depth <= 0) return this.quiescence(position, alpha, beta, ply, 0);
 
     const moves = this.orderMoves(position, position.legalMoves(), ply, tt?.move || null);
     if (moves.length === 0) return inCheck ? -MATE_SCORE + ply : 0;
@@ -245,16 +291,22 @@ export class SearchEngine {
     let bestScore = -INF;
     let bestMove = null;
     let bestPv = [];
+    // Tactical classification is only needed at depths where LMR can occur.
+    // Avoid paying for full board scans at shallow nodes.
+    const volatile = depth >= 3 && (cheapVolatility(position) >= 52 || hasNearPromotion(position));
 
     for (let i = 0; i < moves.length; i++) {
       if (this.timeUp()) break;
       const move = moves[i];
       const next = position.makeMove(move);
       const quiet = !(move.flags & FLAGS.CAPTURE) && !move.promotion;
+      const givesCheck = depth >= 3 && next.isInCheck();
       let reduction = 0;
-      if (depth >= 3 && i >= 4 && !inCheck && quiet) reduction = 1;
+      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !volatile) {
+        reduction = depth >= 5 && i >= 9 ? 2 : 1;
+      }
 
-      const fullDepth = depth - 1;
+      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0));
       const reducedDepth = Math.max(0, fullDepth - reduction);
       let childPv = [];
       let score;
@@ -324,7 +376,7 @@ export class SearchEngine {
     return bestScore;
   }
 
-  quiescence(position, alpha, beta, ply) {
+  quiescence(position, alpha, beta, ply, qply = 0) {
     this.qnodes++;
     if (position.halfmove >= 100 || position.isInsufficientMaterial()) return 0;
 
@@ -338,17 +390,34 @@ export class SearchEngine {
       if (stand > alpha) alpha = stand;
     }
 
-    if (ply > 10 || this.timeUp()) return inCheck ? alpha : Math.max(alpha, stand);
+    if (qply > 8 || ply > 18 || this.timeUp()) return inCheck ? alpha : Math.max(alpha, stand);
+
+    // Quiet checks are useful in volatile horizon nodes, but searching them at
+    // every q-node was a large speed regression. Captures and all promotions
+    // remain present unconditionally.
+    if (!inCheck && qply === 0 && cheapVolatility(position) >= 48) {
+      const existing = new Set(moves.map(moveToUci));
+      for (const move of position.legalMoves()) {
+        if (existing.has(moveToUci(move))) continue;
+        if (move.flags & FLAGS.CAPTURE || move.promotion) continue;
+        if (position.makeMove(move).isInCheck()) moves.push(move);
+      }
+    }
 
     moves = this.orderMoves(position, moves, ply, null);
     for (const move of moves) {
       if (this.timeUp()) break;
-      if (!inCheck && (move.flags & FLAGS.CAPTURE)) {
+      const next = position.makeMove(move);
+      const givesCheck = next.isInCheck();
+      if (!inCheck && (move.flags & FLAGS.CAPTURE) && !move.promotion && !givesCheck) {
         const victim = PIECE_VALUES[typeOf(move.captured)] || 0;
-        const attacker = PIECE_VALUES[typeOf(move.piece)] || 0;
-        if (stand + victim + 110 < alpha && victim < attacker) continue;
+        // Full legal SEE is authoritative in qsearch, where pruning an exchange
+        // incorrectly is dangerous and the candidate set is already tactical.
+        const see = staticExchangeEval(position, move, this.seeMemo);
+        if (see < -120) continue;
+        if (stand + Math.max(victim, see) + 95 < alpha) continue;
       }
-      const score = -this.quiescence(position.makeMove(move), -beta, -alpha, ply + 1);
+      const score = -this.quiescence(next, -beta, -alpha, ply + 1, qply + 1);
       if (score >= beta) return beta;
       if (score > alpha) alpha = score;
     }
@@ -357,22 +426,31 @@ export class SearchEngine {
 
   orderMoves(position, moves, ply, ttMove) {
     const killers = this.killers[ply] || [];
-    const scoreMove = move => {
+    const scored = moves.map(move => {
       const u = moveToUci(move);
       let score = 0;
       if (ttMove === u) score += 1_000_000;
-      if (move.promotion) score += 90_000 + (PIECE_VALUES[move.promotion] || 0);
+      if (move.promotion) score += 130_000 + (PIECE_VALUES[move.promotion] || 0) * 40;
       if (move.flags & FLAGS.CAPTURE) {
-        score += 70_000
-          + (PIECE_VALUES[typeOf(move.captured)] || 0) * 12
-          - (PIECE_VALUES[typeOf(move.piece)] || 0);
+        const victim = PIECE_VALUES[typeOf(move.captured)] || 0;
+        const attacker = PIECE_VALUES[typeOf(move.piece)] || 0;
+        score += 80_000 + victim * 12 - attacker;
+        // Legal SEE is deliberately selective here. Root ordering benefits from
+        // exact exchange information; doing it at every interior node erased a
+        // full ply of practical depth.
+        if (ply === 0) {
+          const see = staticExchangeEval(position, move, this.seeMemo);
+          score += Math.max(-12000, Math.min(30000, see * 30));
+        }
       }
+      if (ply <= 1 && !(move.flags & FLAGS.CAPTURE) && !move.promotion && position.makeMove(move).isInCheck()) score += 62_000;
       if (killers[0] === u) score += 18_000;
       else if (killers[1] === u) score += 14_000;
       score += Math.min(30000, this.history.get(u) || 0);
-      return score;
-    };
-    return [...moves].sort((a, b) => scoreMove(b) - scoreMove(a));
+      return { move, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    return scored.map(x => x.move);
   }
 
   personalitySelect(position, lines, bestFallback) {
@@ -382,6 +460,7 @@ export class SearchEngine {
         score: bestFallback.score,
         objectiveScore: bestFallback.score,
         pv: bestFallback.pv,
+        risk: bestFallback.bestMove ? rootTacticalRisk(position, bestFallback.bestMove, this.seeMemo) : 0,
       };
     }
 
@@ -391,21 +470,55 @@ export class SearchEngine {
 
     if (Math.abs(bestScore) >= MATE_SCORE - 1000) {
       const forced = pool.find(line => line.score === bestScore) || pool[0];
-      return { move: forced.move, score: bestScore, objectiveScore: bestScore, pv: forced.pv };
+      return { move: forced.move, score: bestScore, objectiveScore: bestScore, pv: forced.pv, risk: 0 };
     }
 
     const window = this.config.selectionWindow ?? 32;
     const eligible = pool.filter(line => line.score >= bestScore - window);
+    const danger = cheapVolatility(position);
     const scored = eligible.map(line => {
       const deterministicNoise = this.config.evalNoise
         ? pseudoNoise(position.hash, line.move, this.config.evalNoise)
         : 0;
-      const composite = line.score + (line.personality || 0) + deterministicNoise;
-      return { ...line, composite };
+      const personality = danger >= 62 ? 0 : (line.personality || 0);
+      const risk = rootTacticalRisk(position, line.move, this.seeMemo);
+      // Root risk is a veto/verification signal, not a second evaluation
+      // function. Keep it strong for mate/rook/queen loss but modest for a
+      // potentially sound minor-piece sacrifice that normal search likes.
+      const riskPenalty = risk >= MATE_RISK
+        ? 1_000_000
+        : risk >= 700
+          ? 180 + (risk - 700) * 0.20
+          : risk >= 300
+            ? 35 + (risk - 300) * 0.08
+            : 0;
+      const composite = line.score + personality + deterministicNoise - riskPenalty;
+      return { ...line, personality, risk, composite };
     }).sort((a, b) => b.composite - a.composite);
 
-    const pick = scored[0] || pool[0];
-    return { move: pick.move, score: pick.composite, objectiveScore: pick.score, pv: pick.pv };
+    let pick = scored[0] || pool[0];
+
+    // A short forced rook/queen loss can widen the normal personality window;
+    // smaller tactical concessions remain search-authoritative so sacrifices
+    // are not mechanically banned.
+    if (pick?.risk >= 500) {
+      const rescuePool = pool.filter(line => line.score >= bestScore - 120).map(line => ({
+        ...line,
+        risk: rootTacticalRisk(position, line.move, this.seeMemo),
+      }));
+      const safer = rescuePool
+        .filter(line => line.risk + 220 < pick.risk)
+        .sort((a, b) => (b.score - b.risk * 0.18) - (a.score - a.risk * 0.18))[0];
+      if (safer) pick = { ...safer, composite: safer.score };
+    }
+
+    return {
+      move: pick.move,
+      score: pick.composite ?? pick.score,
+      objectiveScore: pick.score,
+      pv: pick.pv,
+      risk: pick.risk || 0,
+    };
   }
 
   repetitionUtility(position) {

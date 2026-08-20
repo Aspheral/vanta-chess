@@ -4,10 +4,11 @@ import { pieceName, pieceSvg } from './pieces.js';
 import { chessAudio } from './audio.js';
 
 export class BoardView {
-  constructor(root,{onMoveRequest,onEditorSquare}={}) {
+  constructor(root,{onMoveRequest,onEditorSquare,onEditorMove}={}) {
     this.root=root;
     this.onMoveRequest=onMoveRequest;
     this.onEditorSquare=onEditorSquare;
+    this.onEditorMove=onEditorMove;
     this.selected=null;
     this.dragFrom=null;
     this.position=null;
@@ -18,6 +19,7 @@ export class BoardView {
     this.completedAnimationKey=null;
     this.lastSoundKey=null;
     this.animationGeneration=0;
+    this.suppressEditorClick=false;
   }
 
   render(position,options={}) {
@@ -62,7 +64,7 @@ export class BoardView {
       const labelFile=(this.options.orientation==='w'?row===7:row===0)?square[0]:'';
       const labelRank=(this.options.orientation==='w'?col===0:col===7)?square[1]:'';
       html+=`<button class="${classes.join(' ')}" data-index="${index}" role="gridcell" aria-label="${square}${p?' '+pieceName(p):''}">`;
-      if(p) html+=`<span class="piece ${colorOf(p)==='w'?'white-piece':'black-piece'}${shouldAnimate&&index===lastTo?' animation-destination':''}" draggable="${this.options.interactive&&!this.options.editing?'true':'false'}" data-from="${index}">${pieceSvg(p)}</span>`;
+      if(p) html+=`<span class="piece ${colorOf(p)==='w'?'white-piece':'black-piece'}${shouldAnimate&&index===lastTo?' animation-destination':''}" draggable="${this.options.interactive?'true':'false'}" data-from="${index}">${pieceSvg(p)}</span>`;
       if(labelFile) html+=`<span class="coord file">${labelFile}</span>`;
       if(labelRank) html+=`<span class="coord rank">${labelRank}</span>`;
       html+='</button>';
@@ -141,15 +143,23 @@ export class BoardView {
 
   bind() {
     this.root.querySelectorAll('.square').forEach(el=>{
-      el.addEventListener('click',()=>this.handleSquare(Number(el.dataset.index)));
+      el.addEventListener('click',()=>{
+        if(this.options.editing&&this.suppressEditorClick){this.suppressEditorClick=false;return;}
+        this.handleSquare(Number(el.dataset.index));
+      });
       el.addEventListener('dragover',e=>{ if(this.options.interactive) e.preventDefault(); });
       el.addEventListener('drop',e=>{
         e.preventDefault();
-        const from=Number(e.dataTransfer.getData('text/plain')||this.dragFrom);
+        const raw=e.dataTransfer.getData('text/plain');
+        const from=raw!==''?Number(raw):this.dragFrom;
         const to=Number(el.dataset.index);
-        if(Number.isInteger(from)) this.requestMove(from,to);
+        if(Number.isInteger(from)){
+          if(this.options.editing){this.suppressEditorClick=true;this.onEditorMove?.(from,to);}
+          else this.requestMove(from,to);
+        }
       });
     });
+
     this.root.querySelectorAll('.piece[draggable="true"]').forEach(piece=>{
       piece.addEventListener('dragstart',e=>{
         chessAudio.unlock();
@@ -162,6 +172,29 @@ export class BoardView {
         piece.classList.remove('dragging');
         this.dragFrom=null;
       });
+
+      // iOS Safari does not reliably implement HTML drag-and-drop. Pointer
+      // release uses elementFromPoint so editor pieces can still be dragged.
+      if(this.options.editing){
+        let startX=0,startY=0,pointerFrom=null;
+        piece.addEventListener('pointerdown',e=>{
+          chessAudio.unlock();
+          pointerFrom=Number(piece.dataset.from);
+          startX=e.clientX;startY=e.clientY;
+          try{piece.setPointerCapture(e.pointerId);}catch{}
+        });
+        piece.addEventListener('pointerup',e=>{
+          if(pointerFrom==null)return;
+          const moved=Math.hypot(e.clientX-startX,e.clientY-startY)>6;
+          const target=document.elementFromPoint(e.clientX,e.clientY)?.closest?.('.square');
+          const to=target?Number(target.dataset.index):null;
+          if(moved&&Number.isInteger(to)&&to!==pointerFrom){
+            this.suppressEditorClick=true;
+            this.onEditorMove?.(pointerFrom,to);
+          }
+          pointerFrom=null;
+        });
+      }
     });
   }
 
