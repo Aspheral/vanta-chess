@@ -141,10 +141,24 @@ export function rootTacticalRisk(position, move, seeMemo = new Map()) {
   return Math.max(0, Math.round(risk));
 }
 
+/**
+ * Hot-path volatility must stay genuinely cheap. This function is called from
+ * LMR, qsearch and root personality selection, so expensive attack-map scans
+ * here cost practical search depth on every move. Checks and imminent
+ * promotions are the two tactical conditions that must never be hidden from
+ * selective search. Richer signals live in positionCriticality(), which runs
+ * once at the root for rapid time allocation.
+ */
 export function cheapVolatility(position) {
-  let score = position.isInCheck() ? 34 : 0;
-  if (hasNearPromotion(position)) score += 24;
-  score += advancedPasserVolatility(position);
+  let score = position.isInCheck() ? 42 : 0;
+  if (hasNearPromotion(position)) score += 34;
+  return Math.min(100, score);
+}
+
+export function positionCriticality(position) {
+  let score = cheapVolatility(position) + advancedPasserVolatility(position);
+
+  // These are useful time-management signals, but intentionally root-only.
   if (hasLooseMajor(position, position.turn)) score += 18;
   if (hasLooseMajor(position, opposite(position.turn))) score += 12;
   const king = position.kingSquare(position.turn);
@@ -159,11 +173,7 @@ export function cheapVolatility(position) {
     }
     score += Math.min(24, attackedRing * 4);
   }
-  return Math.min(100, score);
-}
 
-export function positionCriticality(position) {
-  let score = cheapVolatility(position);
   const seeMemo = new Map();
   let checks = 0, promotions = 0, winningCaptures = 0;
   for (const move of position.legalMoves()) {
