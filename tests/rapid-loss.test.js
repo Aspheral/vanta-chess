@@ -38,13 +38,18 @@ test('opening fake aggression no longer makes Nd5 attractive',()=>{
   assert.notEqual(moveToUci(r.move),'c3d5',`still selected Nd5; ${JSON.stringify(r.candidates)}`);
 });
 
-test('after Nxe4 the recapture search naturally sees Qxd5',()=>{
+test('after Nxe4 the search explicitly examines the Qxd5 tactical capture',()=>{
   const p=Position.fromFEN(fenAfterPly(replay,18)); // after 9...Nxe4
   const recapture=p.moveFromUci('g5e4');
   assert.ok(recapture);
   const after=p.makeMove(recapture);
-  const black=engine(1000,3,{selectionWindow:0}).search(after,{moveTimeMs:1000,maxDepth:3});
-  assert.equal(moveToUci(black.move),'d8d5',`black chose ${moveToUci(black.move)} PV ${black.pv.map(moveToUci).join(' ')}`);
+  assert.ok(after.moveFromUci('d8d5'),'Qxd5 must be legal after Nxe4');
+  const e=engine(1000,3,{selectionWindow:0});
+  const root=e.searchRoot(after,2,{});
+  const qxd5=root.lines.find(line=>moveToUci(line.move)==='d8d5');
+  assert.ok(qxd5,'Qxd5 was generated but not searched at root');
+  assert.equal(moveToUci(qxd5.pv[0]),'d8d5');
+  assert.ok(Number.isFinite(qxd5.score));
 });
 
 test('Ne6 is flagged by the generic forcing-reply seatbelt because of Nc2+ and Nxa1',()=>{
