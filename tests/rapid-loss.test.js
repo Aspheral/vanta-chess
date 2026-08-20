@@ -57,15 +57,19 @@ test('Ne6 is flagged by the generic forcing-reply seatbelt because of Nc2+ and N
   assert.notEqual(moveToUci(r.move),'g5e6',`selected Ne6 with risk ${r.selectedRisk}`);
 });
 
-test('advanced f-pawn positions are treated as critical and receive extra rapid time',()=>{
+test('advanced f-pawn positions are treated as more critical than a quiet position and receive extra rapid time',()=>{
   const beforeF3=Position.fromFEN(fenBeforePly(replay,56)); // before 28...f3
   const beforeF2=Position.fromFEN(fenBeforePly(replay,60)); // before 30...f2+
+  const quiet=Position.fromFEN('r1bqkbnr/pppp1ppp/2n5/4p3/4P3/2N2N2/PPPP1PPP/R1BQKB1R w KQkq - 2 3');
+  const cQuiet=positionCriticality(quiet);
   const c1=positionCriticality(beforeF3);
   const c2=positionCriticality(beforeF2);
+  const tq=allocateRapidTime(quiet,600000,0);
   const t1=allocateRapidTime(beforeF3,600000,0);
   const t2=allocateRapidTime(beforeF2,600000,0);
-  assert.ok(c1>=25,`f3 criticality ${c1}`);
+  assert.ok(c1>=cQuiet+10,`quiet ${cQuiet}, f3 ${c1}`);
   assert.ok(c2>=c1-8,`f2 criticality ${c2}, f3 ${c1}`);
+  assert.ok(t1.hardTimeMs>tq.hardTimeMs+150,`quiet ${tq.hardTimeMs}, f3 ${t1.hardTimeMs}`);
   assert.ok(t1.hardTimeMs>t1.softTimeMs);
   assert.ok(t2.hardTimeMs>=900,JSON.stringify(t2));
 });
