@@ -12,9 +12,11 @@ export const VANTA_PERSONALITY = Object.freeze({
 });
 
 export const STRENGTH_PRESETS = Object.freeze({
-  1200: { maxDepth: 4, moveTimeMs: 80, nodeLimit: 35000, selectionWindow: 105, evalNoise: 28 },
-  1500: { maxDepth: 6, moveTimeMs: 650, nodeLimit: 260000, selectionWindow: 32, evalNoise: 4 },
-  1800: { maxDepth: 7, moveTimeMs: 500, nodeLimit: 400000, selectionWindow: 18, evalNoise: 2 },
+  1200: { maxDepth: 4, moveTimeMs: 80, nodeLimit: 35000, selectionWindow: 105, evalNoise: 28, adaptiveStrength: false },
+  // 1500 is now Vanta's quiet-position baseline, not a hard ceiling.
+  1500: { maxDepth: 6, moveTimeMs: 650, nodeLimit: 260000, selectionWindow: 32, evalNoise: 4, adaptiveStrength: true },
+  1800: { maxDepth: 7, moveTimeMs: 1200, nodeLimit: 520000, selectionWindow: 18, evalNoise: 2, adaptiveStrength: false },
+  2050: { maxDepth: 9, moveTimeMs: 7500, nodeLimit: 1100000, selectionWindow: 8, evalNoise: 0, adaptiveStrength: false },
 });
 
 export function strengthConfig(target = 1500) {
