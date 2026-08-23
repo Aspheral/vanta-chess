@@ -44,21 +44,21 @@ function attacksSquare(position, from, target) {
   }
 
   const dirs = type === 'b' ? BISHOP_DIRS : type === 'r' ? ROOK_DIRS : QUEEN_DIRS;
-  for (const [rr, cc] of dirs) {
-    if (rr === 0 && dc !== 0) continue;
-    if (cc === 0 && dr !== 0) continue;
-    if (rr !== 0 && cc !== 0 && Math.abs(dr) !== Math.abs(dc)) continue;
-    if (rr !== 0 && dr !== 0 && Math.sign(dr) !== Math.sign(rr)) continue;
-    if (cc !== 0 && dc !== 0 && Math.sign(dc) !== Math.sign(cc)) continue;
+  for (const [stepR, stepC] of dirs) {
+    if (stepR === 0 && dr !== 0) continue;
+    if (stepC === 0 && dc !== 0) continue;
+    if (stepR !== 0 && stepC !== 0 && Math.abs(dr) !== Math.abs(dc)) continue;
+    if (dr !== 0 && Math.sign(dr) !== Math.sign(stepR)) continue;
+    if (dc !== 0 && Math.sign(dc) !== Math.sign(stepC)) continue;
 
-    let r = fr + rr;
-    let c = fc + cc;
+    let r = fr + stepR;
+    let c = fc + stepC;
     while (inBounds(r, c)) {
       const sq = r * 8 + c;
       if (sq === target) return true;
       if (position.board[sq]) break;
-      r += rr;
-      c += cc;
+      r += stepR;
+      c += stepC;
     }
   }
   return false;
