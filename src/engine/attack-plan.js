@@ -211,11 +211,16 @@ export function attackReadiness(position, color = position.turn) {
 
   score = Math.round(clamp(score, 0, 100));
   const phase = score >= 78 ? 'assault' : score >= 62 ? 'pressure' : 'mobilize';
+
+  // This multiplier is deliberately bounded. Hyper-aggression should mean
+  // "prefer the sharpest objectively competitive line after mobilization",
+  // not "erase the evaluation because the army looks exciting". Search and
+  // the root tactical-risk seatbelt remain authoritative.
   const assaultMultiplier = phase === 'assault'
-    ? 1.25 + ((score - 78) / 22) * 0.75
+    ? 1.0 + ((score - 78) / 22) * 0.35
     : phase === 'pressure'
-      ? 0.9 + ((score - 62) / 16) * 0.35
-      : 0.38 + (score / 62) * 0.42;
+      ? 0.8 + ((score - 62) / 16) * 0.2
+      : 0.5 + (score / 62) * 0.25;
 
   return {
     score,
@@ -235,21 +240,11 @@ export function attackReadiness(position, color = position.turn) {
 }
 
 /**
- * A deliberately cheap objective coordination term. Full attack-readiness is
- * reserved for root personality scoring; evaluating king-zone geometry at every
- * leaf costs too much search depth. This term simply rewards mobilization and
- * king readiness by a few dozen centipawns at most.
+ * Readiness is a root style signal rather than a second positional evaluator.
+ * Development, activity and king safety already live in evaluate(). Returning
+ * zero here prevents double-counting them at every leaf and ensures sacrifices
+ * still need search-demonstrated compensation.
  */
-export function coordinatedAssaultValue(position, color = position.turn) {
-  const h = HOME[color];
-  let departedMinors = 0;
-  for (const [sq, piece] of h.minors) if (position.board[sq] !== piece) departedMinors++;
-  const king = position.kingSquare(color);
-  const castled = h.castles.includes(king);
-  const queenOffHome = position.board[h.queen] !== h.queenPiece;
-
-  let value = departedMinors * 4;
-  if (castled) value += 12;
-  if (queenOffHome && departedMinors >= 3) value += 3;
-  return Math.round(clamp(value, 0, 32));
+export function coordinatedAssaultValue(_position, _color) {
+  return 0;
 }
