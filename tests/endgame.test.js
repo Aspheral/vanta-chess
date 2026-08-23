@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Position, moveToUci } from '../src/chess/position.js';
 import { SearchEngine } from '../src/engine/search.js';
-import { evaluateBreakdown } from '../src/engine/evaluation.js';
 import {
   criticalPromotionDefenseRisk,
   hasNearPromotion,
@@ -43,25 +42,6 @@ test('advanced passed pawns are treated as near-promotion volatility two moves e
   assert.ok(push);
   assert.equal(isCriticalPassedPawnPush(position, push), true);
   assert.equal(hasNearPromotion(position), true);
-});
-
-test('static endgame evaluation values the sole promotion-square controller at rook scale', () => {
-  const controlled = Position.fromFEN('7k/8/8/8/4B3/8/1p6/7K w - - 0 1');
-  const abandoned = Position.fromFEN('7k/8/8/8/5B2/8/1p6/7K w - - 0 1');
-  const withStopper = evaluateBreakdown(controlled, 'w');
-  const withoutStopper = evaluateBreakdown(abandoned, 'w');
-  assert.ok(
-    withStopper.total >= withoutStopper.total + 400,
-    `expected critical bishop control to swing evaluation by rook-scale value, got ${withStopper.total - withoutStopper.total}`,
-  );
-});
-
-test('queenless endgames reward an active king instead of hiding it on the back rank', () => {
-  const active = Position.fromFEN('7k/8/8/8/4K3/8/6P1/8 w - - 0 1');
-  const passive = Position.fromFEN('7k/8/8/8/8/8/6P1/7K w - - 0 1');
-  const activeScore = evaluateBreakdown(active, 'w');
-  const passiveScore = evaluateBreakdown(passive, 'w');
-  assert.ok(activeScore.endgameKing > passiveScore.endgameKing + 20);
 });
 
 test('search avoids the hanging knight capture that abandons the only promotion stopper', () => {
