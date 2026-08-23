@@ -117,6 +117,11 @@ export function staticExchangeEval(position, move, memo = new Map()) {
   return immediate - exchangeContinuation(next, move.to, memo, 0);
 }
 
+/**
+ * "Near promotion" includes a passed pawn on the sixth/seventh rank, not only
+ * a pawn literally one push from queening. This keeps late pawn races out of
+ * late-move reductions before the horizon becomes obvious.
+ */
 export function hasNearPromotion(position, color = null) {
   for (let sq = 0; sq < 64; sq++) {
     const piece = position.board[sq];
@@ -125,6 +130,7 @@ export function hasNearPromotion(position, color = null) {
     if (color && pc !== color) continue;
     const [row] = rowCol(sq);
     if ((pc === 'w' && row <= 1) || (pc === 'b' && row >= 6)) return true;
+    if (pawnProgress(sq, pc) >= 4 && isPassedPawnAt(position, sq, pc)) return true;
   }
   return false;
 }
@@ -324,16 +330,13 @@ export function rootTacticalRisk(position, move, seeMemo = new Map()) {
 }
 
 /**
- * Hot-path volatility must stay genuinely cheap. This function is called from
- * LMR, qsearch and root personality selection, so expensive attack-map scans
- * here cost practical search depth on every move. Checks and imminent
- * promotions are the two tactical conditions that must never be hidden from
- * selective search. Richer signals live in positionCriticality(), which runs
- * once at the root for rapid time allocation.
+ * Hot-path volatility must stay genuinely cheap. Advanced passed pawns are
+ * intentionally promoted to tactical status here so LMR does not shave away
+ * the only tempo that prevents queening.
  */
 export function cheapVolatility(position) {
   let score = position.isInCheck() ? 42 : 0;
-  if (hasNearPromotion(position)) score += 34;
+  if (hasNearPromotion(position)) score += 52;
   return Math.min(100, score);
 }
 
