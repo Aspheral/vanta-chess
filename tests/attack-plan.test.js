@@ -27,6 +27,12 @@ test('developed, castled and connected army unlocks assault phase', () => {
   assert.ok(profile.assaultMultiplier >= 1.25);
 });
 
+test('slider geometry contributes real central influence', () => {
+  const rookFile = Position.fromFEN('7k/8/8/8/8/8/8/3R3K w - - 0 1');
+  const profile = attackReadiness(rookFile, WHITE);
+  assert.ok(profile.centralInfluence > 0, `expected rook d1 to influence central d-file squares, got ${profile.centralInfluence}`);
+});
+
 test('during mobilization Vanta prefers bringing another piece into the game over premature queen activity', () => {
   const position = Position.fromFEN(OPEN_EPAWN);
   const nf3 = position.moveFromUci('g1f3');
@@ -52,9 +58,9 @@ test('the same checking sacrifice receives more personality support after the ar
   assert.ok(readyBonus > earlyBonus, `expected coordinated Bxf7+ bonus (${readyBonus}) > early Bxf7+ (${earlyBonus})`);
 });
 
-test('objective coordination value rewards a mobilized attacking army without becoming a material-sized bonus', () => {
+test('objective coordination value rewards mobilization but stays small enough for search to remain authoritative', () => {
   const start = coordinatedAssaultValue(Position.fromFEN(START), WHITE);
   const ready = coordinatedAssaultValue(Position.fromFEN(DEVELOPED_ATTACK), WHITE);
   assert.ok(ready > start + 10, `expected developed coordination ${ready} to exceed start ${start}`);
-  assert.ok(Math.abs(ready) <= 72);
+  assert.ok(Math.abs(ready) <= 32);
 });
