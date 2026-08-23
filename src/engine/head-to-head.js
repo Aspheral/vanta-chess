@@ -5,6 +5,7 @@ const OLD_ROOT=resolve(process.env.OLD_ROOT||'.');
 const NEW_ROOT=resolve(process.env.NEW_ROOT||'.');
 const MOVE_TIME_MS=Number(process.env.MOVE_TIME_MS||120);
 const MAX_PLIES=Number(process.env.MAX_PLIES||100);
+const MIN_SCORE=Number(process.env.MIN_SCORE||0.54);
 
 async function importFrom(root,path){
   return import(`${pathToFileURL(join(root,path)).href}?v=${Date.now()}-${Math.random()}`);
@@ -82,7 +83,7 @@ for(const [name,opening] of OPENINGS){
 }
 
 const report={
-  moveTimeMs:MOVE_TIME_MS,maxPlies:MAX_PLIES,games:games.length,
+  moveTimeMs:MOVE_TIME_MS,maxPlies:MAX_PLIES,games:games.length,minScore:MIN_SCORE,
   score:{newWins:totals.newWins,draws:totals.draws,oldWins:totals.oldWins,newPoints:totals.newWins+totals.draws*.5},
   averageDepth:{new:Number((totals.newDepth/Math.max(1,totals.newMoves)).toFixed(2)),old:Number((totals.oldDepth/Math.max(1,totals.oldMoves)).toFixed(2))},
   highTacticalRiskMoves:{new:totals.newRisk,old:totals.oldRisk},
@@ -92,7 +93,7 @@ console.log('\n=== Old vs New Vanta ===');
 console.log(JSON.stringify(report,null,2));
 
 const score=report.score.newPoints/report.games;
-if(score<0.54){
-  console.error(`New Vanta scored only ${(score*100).toFixed(1)}%; strength gate requires >=54%.`);
+if(score<MIN_SCORE){
+  console.error(`New Vanta scored only ${(score*100).toFixed(1)}%; strength gate requires >=${(MIN_SCORE*100).toFixed(1)}%.`);
   process.exitCode=1;
 }
