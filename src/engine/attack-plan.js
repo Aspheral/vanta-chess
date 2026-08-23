@@ -7,12 +7,14 @@ const HOME = Object.freeze({
   [WHITE]: Object.freeze({
     minors: Object.freeze([[57, 'N'], [62, 'N'], [58, 'B'], [61, 'B']]),
     queen: 59,
+    queenPiece: 'Q',
     king: 60,
     castles: Object.freeze([62, 58]),
   }),
   [BLACK]: Object.freeze({
     minors: Object.freeze([[1, 'n'], [6, 'n'], [2, 'b'], [5, 'b']]),
     queen: 3,
+    queenPiece: 'q',
     king: 4,
     castles: Object.freeze([6, 2]),
   }),
@@ -178,10 +180,10 @@ function kingReadiness(position, color) {
 }
 
 function queenParticipation(position, color) {
-  const home = HOME[color].queen;
-  const piece = position.board[home];
-  const queenHome = piece && colorOf(piece) === color && typeOf(piece) === 'q';
-  return queenHome ? 0 : 1;
+  const h = HOME[color];
+  if (position.board[h.queen] === h.queenPiece) return 0;
+  if (position.board.includes(h.queenPiece)) return 1;
+  return 0.35;
 }
 
 /**
@@ -225,7 +227,7 @@ export function attackReadiness(position, color = position.turn) {
     kingReadiness: Number(king.toFixed(3)),
     rooksConnected: Boolean(rooks),
     centralInfluence: Number(center.toFixed(3)),
-    queenParticipating: Boolean(queen),
+    queenParticipating: queen >= 0.99,
     attackers: participation.attackers,
     heavyAttackers: participation.heavyAttackers,
     attackerRatio: Number(participation.ratio.toFixed(3)),
@@ -233,18 +235,21 @@ export function attackReadiness(position, color = position.turn) {
 }
 
 /**
- * A bounded objective bonus for coordinated pressure. Search remains the
- * authority on sacrifices; this only values several developed pieces working
- * together more than a single piece making decorative threats.
+ * A deliberately cheap objective coordination term. Full attack-readiness is
+ * reserved for root personality scoring; evaluating king-zone geometry at every
+ * leaf costs too much search depth. This term simply rewards mobilization and
+ * king readiness by a few dozen centipawns at most.
  */
 export function coordinatedAssaultValue(position, color = position.turn) {
-  const readiness = attackReadiness(position, color);
-  if (readiness.phase === 'mobilize') return Math.round((readiness.score - 45) * 0.18);
+  const h = HOME[color];
+  let departedMinors = 0;
+  for (const [sq, piece] of h.minors) if (position.board[sq] !== piece) departedMinors++;
+  const king = position.kingSquare(color);
+  const castled = h.castles.includes(king);
+  const queenOffHome = position.board[h.queen] !== h.queenPiece;
 
-  const participation = Math.max(0, readiness.attackers - 1) * 7
-    + readiness.heavyAttackers * 5;
-  const readinessBase = readiness.phase === 'assault'
-    ? 14 + (readiness.score - 78) * 1.15
-    : (readiness.score - 62) * 0.55;
-  return Math.round(clamp(readinessBase + participation, -8, 72));
+  let value = departedMinors * 4;
+  if (castled) value += 12;
+  if (queenOffHome && departedMinors >= 3) value += 3;
+  return Math.round(clamp(value, 0, 32));
 }
