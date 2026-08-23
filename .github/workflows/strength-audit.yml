@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  head-to-head:
+  pre-audit-baseline:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -20,10 +20,32 @@ jobs:
           node-version: 22
       - name: Materialize pre-audit baseline
         run: git worktree add /tmp/vanta-old 0780bef7bd345b624dd69351e509c1f5a02035b9
-      - name: Run 24-game equal-time old-vs-new match
+      - name: Run 24-game equal-time legacy strength gate
         env:
           OLD_ROOT: /tmp/vanta-old
           NEW_ROOT: ${{ github.workspace }}
           MOVE_TIME_MS: '120'
           MAX_PLIES: '100'
+          MIN_SCORE: '0.54'
+        run: node src/engine/head-to-head.js
+
+  current-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Materialize current production Vanta
+        run: git worktree add /tmp/vanta-main origin/main
+      - name: Run 24-game equal-time production non-regression gate
+        env:
+          OLD_ROOT: /tmp/vanta-main
+          NEW_ROOT: ${{ github.workspace }}
+          MOVE_TIME_MS: '120'
+          MAX_PLIES: '100'
+          MIN_SCORE: '0.48'
         run: node src/engine/head-to-head.js

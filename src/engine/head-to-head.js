@@ -5,17 +5,19 @@ const OLD_ROOT=resolve(process.env.OLD_ROOT||'.');
 const NEW_ROOT=resolve(process.env.NEW_ROOT||'.');
 const MOVE_TIME_MS=Number(process.env.MOVE_TIME_MS||120);
 const MAX_PLIES=Number(process.env.MAX_PLIES||100);
+const MIN_SCORE=Number(process.env.MIN_SCORE||0.54);
 
 async function importFrom(root,path){
   return import(`${pathToFileURL(join(root,path)).href}?v=${Date.now()}-${Math.random()}`);
 }
 
-const [{SearchEngine:OldSearch},{Position:OldPosition},{SearchEngine:NewSearch},{ChessGame},{rootTacticalRisk}] = await Promise.all([
+const [{SearchEngine:OldSearch},{Position:OldPosition},{SearchEngine:NewSearch},{ChessGame},{rootTacticalRisk},{attackReadiness}] = await Promise.all([
   importFrom(OLD_ROOT,'src/engine/search.js'),
   importFrom(OLD_ROOT,'src/chess/position.js'),
   importFrom(NEW_ROOT,'src/engine/search.js'),
   importFrom(NEW_ROOT,'src/chess/game.js'),
   importFrom(NEW_ROOT,'src/engine/tactics.js'),
+  importFrom(NEW_ROOT,'src/engine/attack-plan.js'),
 ]);
 const {Position:NewPosition,moveToUci}=await importFrom(NEW_ROOT,'src/chess/position.js');
 
@@ -51,6 +53,11 @@ function chosenUci(result){
 }
 
 const games=[];
+const phaseStats={
+  mobilize:{moves:0,highRisk:0,depth:0},
+  pressure:{moves:0,highRisk:0,depth:0},
+  assault:{moves:0,highRisk:0,depth:0},
+};
 const totals={newWins:0,draws:0,oldWins:0,newDepth:0,oldDepth:0,newMoves:0,oldMoves:0,newRisk:0,oldRisk:0};
 for(const [name,opening] of OPENINGS){
   for(const newColor of ['w','b']){
@@ -61,6 +68,7 @@ for(const [name,opening] of OPENINGS){
       const status=game.status();if(status.over){terminal=status;break;}
       const kind=game.position.turn===newColor?'new':'old';
       const fen=game.position.toFEN();
+      const phase=kind==='new'?attackReadiness(game.position,game.position.turn).phase:null;
       const result=runSearch(kind,fen);
       const uci=chosenUci(result);
       if(!uci||!game.position.moveFromUci(uci)){terminal={over:true,result:'1/2-1/2',reason:'invalid/no move'};break;}
@@ -68,6 +76,8 @@ for(const [name,opening] of OPENINGS){
       const risk=rootTacticalRisk(game.position,neutralMove);
       if(kind==='new'){
         totals.newDepth+=result.depth||0;totals.newMoves++;if(risk>=300)totals.newRisk++;
+        const bucket=phaseStats[phase]||phaseStats.mobilize;
+        bucket.moves++;bucket.depth+=result.depth||0;if(risk>=300)bucket.highRisk++;
       }else{
         totals.oldDepth+=result.depth||0;totals.oldMoves++;if(risk>=300)totals.oldRisk++;
       }
@@ -81,18 +91,27 @@ for(const [name,opening] of OPENINGS){
   }
 }
 
+const phaseReport=Object.fromEntries(Object.entries(phaseStats).map(([phase,s])=>[phase,{
+  moves:s.moves,
+  share:Number((s.moves/Math.max(1,totals.newMoves)).toFixed(3)),
+  averageDepth:Number((s.depth/Math.max(1,s.moves)).toFixed(2)),
+  highTacticalRiskMoves:s.highRisk,
+  highRiskRate:Number((s.highRisk/Math.max(1,s.moves)).toFixed(3)),
+}]));
+
 const report={
-  moveTimeMs:MOVE_TIME_MS,maxPlies:MAX_PLIES,games:games.length,
+  moveTimeMs:MOVE_TIME_MS,maxPlies:MAX_PLIES,games:games.length,minScore:MIN_SCORE,
   score:{newWins:totals.newWins,draws:totals.draws,oldWins:totals.oldWins,newPoints:totals.newWins+totals.draws*.5},
   averageDepth:{new:Number((totals.newDepth/Math.max(1,totals.newMoves)).toFixed(2)),old:Number((totals.oldDepth/Math.max(1,totals.oldMoves)).toFixed(2))},
   highTacticalRiskMoves:{new:totals.newRisk,old:totals.oldRisk},
+  phases:phaseReport,
   details:games,
 };
 console.log('\n=== Old vs New Vanta ===');
 console.log(JSON.stringify(report,null,2));
 
 const score=report.score.newPoints/report.games;
-if(score<0.54){
-  console.error(`New Vanta scored only ${(score*100).toFixed(1)}%; strength gate requires >=54%.`);
+if(score<MIN_SCORE){
+  console.error(`New Vanta scored only ${(score*100).toFixed(1)}%; strength gate requires >=${(MIN_SCORE*100).toFixed(1)}%.`);
   process.exitCode=1;
 }

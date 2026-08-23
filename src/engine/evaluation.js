@@ -4,6 +4,7 @@ import {
 } from '../chess/constants.js';
 import { FLAGS } from '../chess/position.js';
 import { VANTA_PERSONALITY } from './personality.js';
+import { attackReadiness } from './attack-plan.js';
 
 const CENTER = new Set([27, 28, 35, 36]);
 const EXTENDED_CENTER = new Set([18,19,20,21,26,27,28,29,34,35,36,37,42,43,44,45]);
@@ -200,8 +201,39 @@ function isMinorHomeSquare(color,type,square){const h=homeInfo(color),set=type==
 
 export function personalityMoveBonus(position,move){
   const us=position.turn,them=opposite(us),next=position.makeMove(move),beforeAttacks=buildAttackPair(position),afterAttacks=buildAttackPair(next);let bonus=0;const beforeMaterial=materialBalance(position,us),afterMaterial=materialBalance(next,us),movedValue=PIECE_VALUES[typeOf(move.piece)]||0,capturedValue=move.captured?(PIECE_VALUES[typeOf(move.captured)]||0):0,hangingRisk=afterAttacks[them].counts[move.to]?Math.max(0,movedValue-capturedValue):0,sacrifice=Math.max(0,beforeMaterial-afterMaterial,hangingRisk),givesCheck=next.isInCheck(them);
+  const readinessBefore=attackReadiness(position,us),readinessAfter=attackReadiness(next,us);
+
+  // Forcing chess keeps the proven baseline weight even during mobilization.
+  // If there is a real check/capture/promotion, Vanta may take it. Readiness
+  // only suppresses decorative aggression, never a concrete tactic.
   if(givesCheck)bonus+=36;if(move.flags&FLAGS.CAPTURE)bonus+=5;if(move.promotion)bonus+=35;const beforeAttack=attackPotential(position,us,beforeAttacks),afterAttack=attackPotential(next,us,afterAttacks);bonus+=Math.max(-15,Math.min(38,(afterAttack-beforeAttack)*.8));const enemyKingBefore=kingSafetyFor(position,them,beforeAttacks),enemyKingAfter=kingSafetyFor(next,them,afterAttacks);bonus+=Math.max(-10,Math.min(45,(enemyKingBefore-enemyKingAfter)*.55));const ownKingBefore=kingSafetyFor(position,us,beforeAttacks),ownKingAfter=kingSafetyFor(next,us,afterAttacks);if(ownKingAfter<ownKingBefore)bonus-=Math.min(80,(ownKingBefore-ownKingAfter)*1.3);const disciplineLoss=openingKingDiscipline(position,us)-openingKingDiscipline(next,us);if(disciplineLoss>0)bonus-=Math.min(55,disciplineLoss*1.35);
-  if(position.fullmove<=10){const type=typeOf(move.piece),undeveloped=undevelopedMinorCount(position,us),tactical=givesCheck||Boolean(move.flags&FLAGS.CAPTURE);if(['n','b'].includes(type)){if(isMinorHomeSquare(us,type,move.from))bonus+=10;else if(undeveloped>=2&&!tactical)bonus-=18;}if(type==='p'&&[0,1,6,7].includes(move.from%8)&&undeveloped>=2&&!tactical)bonus-=9;}
+
+  if(position.fullmove<=12){
+    const type=typeOf(move.piece),undeveloped=undevelopedMinorCount(position,us),tactical=givesCheck||Boolean(move.flags&FLAGS.CAPTURE)||Boolean(move.promotion);
+    if(['n','b'].includes(type)){
+      if(isMinorHomeSquare(us,type,move.from))bonus+=readinessBefore.phase==='mobilize'?16:10;
+      else if(undeveloped>=2&&!tactical)bonus-=readinessBefore.phase==='mobilize'?24:18;
+    }
+    if(type==='p'&&[0,1,6,7].includes(move.from%8)&&undeveloped>=2&&!tactical)bonus-=readinessBefore.phase==='mobilize'?12:9;
+    if(type==='q'&&readinessBefore.developedMinors<3&&!tactical)bonus-=10;
+    const readinessGain=readinessAfter.score-readinessBefore.score;
+    if(readinessBefore.phase!=='assault'&&!tactical&&readinessGain>0)bonus+=Math.min(12,Math.round(readinessGain*.5));
+  }
+
+  // Once the army is actually ready, turn the original Vanta aggression up,
+  // but only by tens of centipawns. Objective search still decides whether the
+  // candidate belongs in the root window at all.
+  if(readinessBefore.phase==='assault'){
+    const joined=Math.max(0,readinessAfter.attackers-readinessBefore.attackers);
+    bonus+=joined*6;
+    if(givesCheck)bonus+=8;
+    if(givesCheck&&readinessAfter.attackers>=3)bonus+=5;
+    if(afterAttack>beforeAttack)bonus+=Math.min(10,Math.round((afterAttack-beforeAttack)*.12));
+  }else if(readinessBefore.phase==='pressure'){
+    const joined=Math.max(0,readinessAfter.attackers-readinessBefore.attackers);
+    bonus+=joined*3;
+  }
+
   if(sacrifice>0){const compensation=Math.max(0,afterAttack-beforeAttack)+(givesCheck?34:0)+Math.max(0,enemyKingBefore-enemyKingAfter)*.45;const unsupported=Math.max(0,sacrifice-compensation*3.5);bonus+=Math.min(52,compensation*.72)-unsupported*.18;}
   return Math.round(bonus);
 }
