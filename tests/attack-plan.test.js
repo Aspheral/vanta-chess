@@ -15,6 +15,7 @@ test('starting position stays in mobilize phase', () => {
   assert.equal(profile.phase, 'mobilize');
   assert.ok(profile.score < 40, `expected low starting readiness, got ${profile.score}`);
   assert.equal(profile.developedMinors, 0);
+  assert.ok(profile.assaultMultiplier < 0.8);
 });
 
 test('developed, castled and connected army unlocks assault phase', () => {
@@ -24,7 +25,8 @@ test('developed, castled and connected army unlocks assault phase', () => {
   assert.ok(profile.score >= 78, `expected assault readiness, got ${profile.score}`);
   assert.equal(profile.developedMinors, 4);
   assert.equal(profile.rooksConnected, true);
-  assert.ok(profile.assaultMultiplier >= 1.25);
+  assert.ok(profile.assaultMultiplier >= 1.0);
+  assert.ok(profile.assaultMultiplier <= 1.35);
 });
 
 test('slider geometry contributes real central influence', () => {
@@ -58,9 +60,9 @@ test('the same checking sacrifice receives more personality support after the ar
   assert.ok(readyBonus > earlyBonus, `expected coordinated Bxf7+ bonus (${readyBonus}) > early Bxf7+ (${earlyBonus})`);
 });
 
-test('objective coordination value rewards mobilization but stays small enough for search to remain authoritative', () => {
+test('army readiness stays out of static evaluation so search remains authoritative', () => {
   const start = coordinatedAssaultValue(Position.fromFEN(START), WHITE);
   const ready = coordinatedAssaultValue(Position.fromFEN(DEVELOPED_ATTACK), WHITE);
-  assert.ok(ready > start + 10, `expected developed coordination ${ready} to exceed start ${start}`);
-  assert.ok(Math.abs(ready) <= 32);
+  assert.equal(start, 0);
+  assert.equal(ready, 0);
 });
