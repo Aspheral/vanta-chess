@@ -170,7 +170,6 @@ function promotionControlAdjustment(position, square, color, progress, attacks) 
   const enemy = opposite(color);
   const occupant = position.board[promoSq];
 
-  // A friendly piece sitting on its own promotion square is a real blocker.
   if (occupant && colorOf(occupant) === color) return progress >= 5 ? -170 : -55;
 
   const stopperCount = attacks[enemy].counts[promoSq]
@@ -178,8 +177,6 @@ function promotionControlAdjustment(position, square, color, progress, attacks) 
   const support = attacks[color].counts[promoSq];
 
   if (progress >= 5) {
-    // One reliable stopper can be worth rook-scale material because removing
-    // it changes the position from "promotion gets captured" to "new queen".
     if (stopperCount === 0) return 380 + Math.min(60, support * 15);
     if (stopperCount === 1) return -160;
     return -215;
@@ -488,7 +485,6 @@ function endgameKingScore(position, perspective) {
 
 export function evaluateBreakdown(position, perspective = position.turn) {
   const attacks = buildAttackPair(position);
-  const phase = endgameFactor(position);
   const material = materialScore(position, perspective);
   const activity = pieceSquareActivity(position, perspective);
   const mobility = mobilityScore(position, perspective);
@@ -498,9 +494,9 @@ export function evaluateBreakdown(position, perspective = position.turn) {
   const loose = loosePieceScore(position, perspective, attacks);
   const ownKing = kingSafetyFor(position, perspective, attacks);
   const enemyKing = kingSafetyFor(position, opposite(perspective), attacks);
-  const kingSafety = (ownKing - enemyKing) * (1.5 - phase * 0.70);
+  const kingSafety = (ownKing - enemyKing) * 1.5;
   const kingDiscipline = (openingKingDiscipline(position, perspective) - openingKingDiscipline(position, opposite(perspective))) * 1.35;
-  const attack = (attackPotential(position, perspective, attacks) - attackPotential(position, opposite(perspective), attacks)) * (1.15 - phase * 0.25);
+  const attack = (attackPotential(position, perspective, attacks) - attackPotential(position, opposite(perspective), attacks)) * 1.15;
   const initiative = tempoAndInitiative(position, perspective, attacks);
   const endgameKing = endgameKingScore(position, perspective);
   const total = material + activity + mobility + pawns + development + structure + loose
@@ -533,9 +529,6 @@ export function personalityMoveBonus(position, move) {
   const givesCheck = next.isInCheck(them);
   const readinessBefore = attackReadiness(position, us), readinessAfter = attackReadiness(next, us);
 
-  // Forcing chess keeps the proven baseline weight even during mobilization.
-  // If there is a real check/capture/promotion, Vanta may take it. Readiness
-  // only suppresses decorative aggression, never a concrete tactic.
   if (givesCheck) bonus += 36;
   if (move.flags & FLAGS.CAPTURE) bonus += 5;
   if (move.promotion) bonus += 35;
@@ -565,9 +558,6 @@ export function personalityMoveBonus(position, move) {
     }
   }
 
-  // Once the army is actually ready, turn the original Vanta aggression up,
-  // but only by tens of centipawns. Objective search still decides whether the
-  // candidate belongs in the root window at all.
   if (readinessBefore.phase === 'assault') {
     const joined = Math.max(0, readinessAfter.attackers - readinessBefore.attackers);
     bonus += joined * 6;
