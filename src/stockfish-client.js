@@ -1,5 +1,6 @@
-const STOCKFISH_VERSION='18.0.8';
-const CDN=`https://cdn.jsdelivr.net/npm/stockfish@${STOCKFISH_VERSION}/src`;
+export const STOCKFISH_VERSION='10.0.2';
+export const STOCKFISH_LABEL='Stockfish 10';
+export const STOCKFISH_CDN=`https://cdn.jsdelivr.net/npm/stockfish.js@${STOCKFISH_VERSION}`;
 
 function linesFrom(data){
   const text=typeof data==='string'?data:String(data?.data??'');
@@ -28,14 +29,17 @@ function parseInfo(line){
 }
 
 function makeWorkerSource(jsUrl,wasmUrl=null){
-  const locate=wasmUrl?`self.Module={locateFile:function(path){return path.endsWith('.wasm')?'${wasmUrl}':path;}};`:'';
+  const locate=wasmUrl
+    ? `self.Module={locateFile:function(path){return path.endsWith('.wasm')?'${wasmUrl}':path;}};`
+    : '';
   return `${locate}\nimportScripts('${jsUrl}');`;
 }
 
 async function spawnCandidate(jsName,wasmName=null,timeoutMs=18000){
-  const jsUrl=`${CDN}/${jsName}`;
-  const wasmUrl=wasmName?`${CDN}/${wasmName}`:null;
-  const blob=new Blob([makeWorkerSource(jsUrl,wasmUrl)],{type:'text/javascript'});
+  const jsUrl=`${STOCKFISH_CDN}/${jsName}`;
+  const wasmUrl=wasmName?`${STOCKFISH_CDN}/${wasmName}`:null;
+  const source=makeWorkerSource(jsUrl,wasmUrl);
+  const blob=new Blob([source],{type:'text/javascript'});
   const blobUrl=URL.createObjectURL(blob);
   const worker=new Worker(blobUrl);
   let settled=false;
@@ -82,9 +86,12 @@ export class StockfishClient extends EventTarget{
 
   async init(){
     if(this.ready)return;
+    // stockfish.js 10.0.2 is intentionally used here because its WebWorker
+    // build is single-threaded and works on plain static hosts without the
+    // COOP/COEP headers required by modern pthread Stockfish builds.
     const candidates=[
-      ['stockfish-18-lite-single.js','stockfish-18-lite-single.wasm','Stockfish 18 Lite WASM'],
-      ['stockfish-18-asm.js',null,'Stockfish 18 ASM fallback'],
+      ['stockfish.wasm.js','stockfish.wasm','Stockfish 10 WASM'],
+      ['stockfish.js',null,'Stockfish 10 JavaScript fallback'],
     ];
     let lastError=null;
     for(const [js,wasm,label] of candidates){
@@ -94,8 +101,7 @@ export class StockfishClient extends EventTarget{
         this.blobUrl=instance.blobUrl;
         this.flavor=label;
         this.worker.onmessage=e=>this.handleMessage(e.data);
-        this.worker.postMessage('setoption name Hash value 64');
-        this.worker.postMessage('setoption name Threads value 1');
+        this.worker.postMessage('setoption name Hash value 32');
         this.worker.postMessage('ucinewgame');
         await this.waitForReady();
         this.ready=true;
@@ -131,7 +137,7 @@ export class StockfishClient extends EventTarget{
     }
   }
 
-  async search(fen,{moveTimeMs=1800}={}){
+  async search(fen,{moveTimeMs=2200}={}){
     await this.init();
     const token=++this.searchToken;
     this.lastInfo={depth:0,nodes:0,nps:0,score:null,mate:null,pv:[]};
@@ -181,5 +187,3 @@ export class StockfishClient extends EventTarget{
     this.ready=false;
   }
 }
-
-export {STOCKFISH_VERSION};
