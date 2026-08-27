@@ -1,0 +1,179 @@
+/* Vanta game-client polish -------------------------------------------------
+   Loaded last on purpose. This layer is mostly interaction sizing and visual
+   finish so the core board/layout styles stay easy to reason about. */
+
+:root{
+  --tap-size:52px;
+  --game-glow:rgba(168,240,111,.16);
+}
+
+body:before{
+  content:"";
+  position:fixed;
+  inset:0;
+  z-index:-1;
+  pointer-events:none;
+  background:
+    radial-gradient(48rem 30rem at 50% -12rem,rgba(168,240,111,.075),transparent 72%),
+    radial-gradient(28rem 28rem at -8rem 72%,rgba(83,129,69,.055),transparent 74%);
+}
+
+.topbar{
+  box-shadow:0 8px 28px rgba(0,0,0,.16);
+}
+.brand>span:nth-child(2){letter-spacing:-.025em}
+
+.board-wrap{
+  outline:1px solid rgba(255,255,255,.025);
+  outline-offset:-2px;
+}
+.board-wrap:before{
+  content:"";
+  position:absolute;
+  inset:-1px;
+  z-index:19;
+  pointer-events:none;
+  border-radius:inherit;
+  box-shadow:0 0 34px rgba(168,240,111,.035) inset;
+}
+.board-footer{
+  min-height:54px!important;
+  background:
+    radial-gradient(circle at 12% 0,rgba(168,240,111,.06),transparent 42%),
+    linear-gradient(180deg,rgba(25,34,27,.97),rgba(14,20,16,.97))!important;
+}
+
+.btn,.icon-btn,.switch,.palette button,.promotion-box button{
+  -webkit-tap-highlight-color:transparent;
+}
+.btn,.icon-btn{
+  min-height:var(--tap-size);
+  border-radius:13px;
+}
+.btn{
+  padding:12px 15px;
+  font-size:13px;
+}
+.icon-btn{
+  width:var(--tap-size);
+  height:var(--tap-size);
+  padding:0;
+  font-size:20px;
+}
+.btn:active,.icon-btn:active,.palette button:active,.promotion-box button:active{
+  transform:scale(.965);
+}
+
+.controls{
+  gap:9px;
+  padding:12px;
+}
+.controls .btn{min-height:56px;font-size:13px}
+.controls .btn.primary{
+  box-shadow:0 9px 25px rgba(142,227,90,.16),inset 0 1px 0 rgba(255,255,255,.34);
+}
+.field input,.field select{min-height:50px!important;padding:10px 12px!important}
+
+.toggle-row{min-height:52px;padding:10px 13px;font-size:12px}
+.switch{width:48px;height:28px;padding:3px}
+.switch span{width:22px;height:22px}
+.switch.on span{transform:translateX(20px)}
+
+.panel{
+  box-shadow:0 14px 40px rgba(0,0,0,.20);
+}
+.panel-head{min-height:48px}
+.engine-card{
+  background:radial-gradient(circle at 0 0,rgba(168,240,111,.045),transparent 45%);
+}
+.eval{font-variant-numeric:tabular-nums;text-shadow:0 0 24px rgba(168,240,111,.055)}
+.metric{min-height:52px;display:flex;flex-direction:column;justify-content:center}
+.branch{min-height:48px}
+.move-row{min-height:38px;align-items:center}
+
+.editor{padding:12px}
+.palette{gap:6px}
+.palette button{
+  height:50px!important;
+  border-radius:11px!important;
+  font-size:25px!important;
+  transition:transform 100ms ease,border-color 100ms ease,background 100ms ease;
+}
+.editor-row{gap:9px}
+.checks label{min-height:38px;display:inline-flex;align-items:center;gap:5px}
+.checks input{width:20px;height:20px}
+.fenbox{min-height:78px}
+
+.promotion-box{gap:8px;padding:11px}
+.promotion-box button{
+  width:min(20vw,74px)!important;
+  height:min(20vw,74px)!important;
+  font-size:42px!important;
+  transition:transform 100ms ease,background 100ms ease;
+}
+
+/* Mobile is the design target, not a compressed desktop fallback. */
+@media(max-width:639px){
+  :root{--tap-size:50px}
+  .topbar{
+    min-height:62px;
+    padding-bottom:9px;
+  }
+  .brand{gap:10px}
+  .mark{width:30px;height:30px}
+  .brand>span:nth-child(2){font-size:16px}
+  .top-actions{gap:8px}
+  .top-actions .btn{
+    min-height:46px;
+    padding:10px 14px;
+    font-size:13px;
+  }
+  .workspace{gap:12px;padding-top:10px}
+  .board-wrap{border-radius:14px!important}
+  .board-footer{
+    min-height:58px!important;
+    margin-top:9px!important;
+    padding:6px 7px 6px 13px!important;
+  }
+  .turn-label{font-size:13px}
+  .status-dot{width:8px;height:8px}
+  .side{gap:12px}
+  .panel{border-radius:15px}
+  .panel-head{padding:12px 13px}
+  .panel-title{font-size:13px}
+  .panel-sub{font-size:10px}
+  .controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px}
+  .controls .btn{min-height:58px;font-size:14px}
+  .metrics{gap:7px}
+  .metric{min-height:54px;padding:8px}
+  .metric b{font-size:13px}
+  .metric span{font-size:8px}
+  .pv{padding:11px 12px;font-size:11px}
+  .branch{min-height:52px;padding:10px 8px}
+  .move-row{min-height:42px;font-size:12px}
+  .history{max-height:230px}
+  .toast{min-height:46px;display:flex;align-items:center;font-size:12px}
+}
+
+@media(max-width:390px){
+  .top-actions .btn{padding-inline:11px}
+  .controls{gap:8px;padding:10px}
+  .controls .btn{min-height:56px;padding-inline:8px;font-size:13px}
+  .icon-btn{width:48px;height:48px}
+  .palette{grid-template-columns:repeat(6,minmax(0,1fr))}
+  .palette button{height:48px!important}
+}
+
+@media(min-width:1040px){
+  :root{--tap-size:44px}
+  .btn{min-height:44px;padding:9px 14px}
+  .icon-btn{width:44px;height:44px;font-size:18px}
+  .controls .btn{min-height:46px}
+  .board-footer{min-height:54px!important}
+  .panel:hover{border-color:rgba(225,255,224,.12)}
+}
+
+@media(hover:hover){
+  .square.legal-target:hover:before{transform:scale(1.12)}
+  .square.legal-target:before{transition:transform 90ms ease}
+}
