@@ -19,7 +19,11 @@ jobs:
           node-version: 22
       - name: Validate browser and PWA syntax
         run: |
+          node --check src/boot.js
           node --check src/main.js
+          node --check src/spectate-ui.js
+          node --check src/stockfish-client.js
+          node --check src/ui/arrows.js
           node --check src/ui/board.js
           node --check src/ui/audio.js
           node --check sw.js
