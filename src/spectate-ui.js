@@ -2,7 +2,7 @@ import {ChessGame} from './chess/game.js';
 import {WHITE,BLACK} from './chess/constants.js';
 import {BoardView} from './ui/board.js';
 import {EngineController} from './engine/controller.js';
-import {StockfishClient,STOCKFISH_VERSION} from './stockfish-client.js';
+import {StockfishClient,STOCKFISH_VERSION,STOCKFISH_LABEL} from './stockfish-client.js';
 
 const ULTRA_CONFIG=Object.freeze({
   targetElo:3000,
@@ -71,7 +71,7 @@ class UltraSpectate{
           <div class="fighter-row">
             <article class="fighter-card vanta-card" id="vantaCard"><div class="fighter-icon">V</div><div><span class="fighter-name">FULL MAX ULTRA Vanta</span><span class="fighter-sub">~3000 target · maximum search</span></div><b class="fighter-color" id="vantaColor"></b></article>
             <div class="versus">VS</div>
-            <article class="fighter-card stockfish-card" id="stockfishCard"><div class="fighter-icon fish">SF</div><div><span class="fighter-name">Stockfish ${STOCKFISH_VERSION}</span><span class="fighter-sub">browser UCI · unrestricted Elo</span></div><b class="fighter-color" id="stockfishColor"></b></article>
+            <article class="fighter-card stockfish-card" id="stockfishCard"><div class="fighter-icon fish">SF</div><div><span class="fighter-name">${STOCKFISH_LABEL}</span><span class="fighter-sub">portable browser UCI · full skill</span></div><b class="fighter-color" id="stockfishColor"></b></article>
           </div>
           <div class="opening-banner"><span>OPENING</span><b id="openingName">Random popular opening</b><em id="openingEco"></em></div>
           <div class="board-wrap spectate-board" id="spectateBoard"></div>
@@ -84,7 +84,7 @@ class UltraSpectate{
             </div>
           </section>
           <section class="panel"><div class="panel-head"><span class="panel-title">Grandmaster feed</span><span class="panel-sub" id="plyCount">0 plies</span></div><div class="spectate-history" id="spectateHistory"></div></section>
-          <section class="panel arena-note"><b>FULL MAX ULTRA</b><p>Vanta uses its maximum search profile on every move: zero evaluation noise, zero personality tolerance, up to depth 12, 4.5M nodes and a 10-second hard think budget.</p><small>“~3000” is a target strength mode, not a certified rating. Stockfish is loaded on demand from the pinned Stockfish.js ${STOCKFISH_VERSION} browser build.</small></section>
+          <section class="panel arena-note"><b>FULL MAX ULTRA</b><p>Vanta uses its maximum exhibition profile on every move: zero evaluation noise, zero personality tolerance, up to depth 12, 4.5M nodes and a 10-second hard think budget.</p><small>“~3000” is a target strength mode, not a certified rating. The opponent is the pinned ${STOCKFISH_LABEL} (${STOCKFISH_VERSION}) single-thread browser build, chosen because it works on plain static hosts and remains vastly stronger than ordinary human play.</small></section>
         </aside>
       </main>
     </div>`;
@@ -119,7 +119,7 @@ class UltraSpectate{
     this.status=`${this.opening.name} loaded. Engines entering calculation.`;
     this.updateStaticUi();this.renderBoard();this.renderHistory();this.renderLiveInfo();
     try{
-      this.status='Loading Stockfish 18…';this.updateStatus();
+      this.status=`Loading ${STOCKFISH_LABEL}…`;this.updateStatus();
       await this.stockfish.init();
       if(generation!==this.generation)return;
       this.status=`${this.opening.name} · live`;
@@ -234,7 +234,7 @@ class UltraSpectate{
   renderLiveInfo(){
     const vanta=this.thinkingSide==='vanta';
     const info=vanta?this.vantaInfo:this.stockfishInfo;
-    this.root.querySelector('#turnEngine').textContent=vanta?'FULL MAX ULTRA Vanta':'Stockfish 18';
+    this.root.querySelector('#turnEngine').textContent=vanta?'FULL MAX ULTRA Vanta':STOCKFISH_LABEL;
     this.root.querySelector('#turnState').textContent=this.paused?'paused':'THINKING';
     let score='—';
     if(info?.mate!=null)score=`M${info.mate}`;
