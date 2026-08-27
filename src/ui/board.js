@@ -20,9 +20,12 @@ export class BoardView {
     this.lastSoundKey=null;
     this.animationGeneration=0;
     this.suppressEditorClick=false;
+    this.suppressBoardClick=false;
+    this.pointerDrag=null;
   }
 
   render(position,options={}) {
+    this.cancelPointerDrag(false);
     this.position=position;
     this.options={orientation:'w',interactive:true,lastMove:null,branches:[],predictionArrows:true,analysisArrow:null,editing:false,checkSquare:null,highlightBranch:null,animateMoves:true,sounds:true,...options};
     const order=this.options.orientation==='w'?[...Array(64).keys()]:[...Array(64).keys()].reverse();
@@ -141,9 +144,123 @@ export class BoardView {
     return (8-Number(square[1]))*8+file;
   }
 
+  showTransientTargets(from){
+    this.root.querySelectorAll('.square.selected,.square.legal-target,.square.legal-capture').forEach(el=>el.classList.remove('selected','legal-target','legal-capture'));
+    const source=this.root.querySelector(`.square[data-index="${from}"]`);
+    source?.classList.add('selected');
+    if(this.options.editing||!this.position)return;
+    for(const move of this.position.legalMoves().filter(m=>m.from===from)){
+      const target=this.root.querySelector(`.square[data-index="${move.to}"]`);
+      if(!target)continue;
+      target.classList.add(this.position.board[move.to]?'legal-capture':'legal-target');
+    }
+  }
+
+  clearTransientTargets(){
+    this.root.querySelectorAll('.square.selected,.square.legal-target,.square.legal-capture').forEach(el=>el.classList.remove('selected','legal-target','legal-capture'));
+  }
+
+  suppressClickBriefly(){
+    this.suppressBoardClick=true;
+    clearTimeout(this.suppressClickTimer);
+    this.suppressClickTimer=setTimeout(()=>{this.suppressBoardClick=false;},420);
+  }
+
+  beginPointerDrag(piece,e,from){
+    const rect=piece.closest('.square')?.getBoundingClientRect();
+    if(!rect)return;
+    this.pointerDrag={
+      pointerId:e.pointerId,
+      from,
+      startX:e.clientX,
+      startY:e.clientY,
+      size:rect.width,
+      moved:false,
+      piece,
+      ghost:null,
+    };
+    this.showTransientTargets(from);
+    try{piece.setPointerCapture(e.pointerId);}catch{}
+  }
+
+  movePointerDrag(e){
+    const drag=this.pointerDrag;
+    if(!drag||drag.pointerId!==e.pointerId)return;
+    const distance=Math.hypot(e.clientX-drag.startX,e.clientY-drag.startY);
+    if(!drag.moved&&distance<5)return;
+    e.preventDefault();
+    if(!drag.moved){
+      drag.moved=true;
+      drag.piece.classList.add('dragging');
+      document.documentElement.classList.add('board-drag-active');
+      const ghost=document.createElement('span');
+      ghost.className='touch-drag-ghost';
+      ghost.innerHTML=drag.piece.innerHTML;
+      ghost.style.width=`${drag.size}px`;
+      ghost.style.height=`${drag.size}px`;
+      document.body.appendChild(ghost);
+      drag.ghost=ghost;
+    }
+    if(drag.ghost){
+      const x=e.clientX-drag.size/2;
+      const y=e.clientY-drag.size*.88;
+      drag.ghost.style.transform=`translate3d(${x}px,${y}px,0) scale(1.08)`;
+    }
+  }
+
+  finishPointerDrag(e){
+    const drag=this.pointerDrag;
+    if(!drag||drag.pointerId!==e.pointerId)return;
+    if(!drag.moved){
+      this.cancelPointerDrag(false);
+      return;
+    }
+
+    e.preventDefault();
+    const target=document.elementFromPoint(e.clientX,e.clientY)?.closest?.('.square');
+    const to=target?Number(target.dataset.index):null;
+    const from=drag.from;
+    this.suppressClickBriefly();
+    this.cancelPointerDrag(false);
+
+    if(Number.isInteger(to)&&to!==from){
+      if(this.options.editing){
+        this.suppressEditorClick=true;
+        this.onEditorMove?.(from,to);
+      }else{
+        const legal=this.position.legalMoves().filter(m=>m.from===from&&m.to===to);
+        if(legal.length){
+          this.selected=null;
+          this.onMoveRequest?.(from,to,legal);
+        }else{
+          this.selected=from;
+          this.render(this.position,this.options);
+        }
+      }
+    }else if(!this.options.editing){
+      this.selected=from;
+      this.render(this.position,this.options);
+    }else{
+      this.render(this.position,this.options);
+    }
+  }
+
+  cancelPointerDrag(restore=true){
+    const drag=this.pointerDrag;
+    if(drag){
+      try{drag.piece.releasePointerCapture(drag.pointerId);}catch{}
+      drag.piece.classList.remove('dragging');
+      drag.ghost?.remove();
+    }
+    document.documentElement.classList.remove('board-drag-active');
+    this.pointerDrag=null;
+    if(restore&&this.position)this.render(this.position,this.options);
+  }
+
   bind() {
     this.root.querySelectorAll('.square').forEach(el=>{
       el.addEventListener('click',()=>{
+        if(this.suppressBoardClick){this.suppressBoardClick=false;return;}
         if(this.options.editing&&this.suppressEditorClick){this.suppressEditorClick=false;return;}
         this.handleSquare(Number(el.dataset.index));
       });
@@ -164,6 +281,7 @@ export class BoardView {
       piece.addEventListener('dragstart',e=>{
         chessAudio.unlock();
         this.dragFrom=Number(piece.dataset.from);
+        this.showTransientTargets(this.dragFrom);
         e.dataTransfer.setData('text/plain',String(this.dragFrom));
         e.dataTransfer.effectAllowed='move';
         piece.classList.add('dragging');
@@ -171,30 +289,23 @@ export class BoardView {
       piece.addEventListener('dragend',()=>{
         piece.classList.remove('dragging');
         this.dragFrom=null;
+        this.clearTransientTargets();
       });
 
-      // iOS Safari does not reliably implement HTML drag-and-drop. Pointer
-      // release uses elementFromPoint so editor pieces can still be dragged.
-      if(this.options.editing){
-        let startX=0,startY=0,pointerFrom=null;
-        piece.addEventListener('pointerdown',e=>{
-          chessAudio.unlock();
-          pointerFrom=Number(piece.dataset.from);
-          startX=e.clientX;startY=e.clientY;
-          try{piece.setPointerCapture(e.pointerId);}catch{}
-        });
-        piece.addEventListener('pointerup',e=>{
-          if(pointerFrom==null)return;
-          const moved=Math.hypot(e.clientX-startX,e.clientY-startY)>6;
-          const target=document.elementFromPoint(e.clientX,e.clientY)?.closest?.('.square');
-          const to=target?Number(target.dataset.index):null;
-          if(moved&&Number.isInteger(to)&&to!==pointerFrom){
-            this.suppressEditorClick=true;
-            this.onEditorMove?.(pointerFrom,to);
-          }
-          pointerFrom=null;
-        });
-      }
+      // Mobile Safari's HTML drag-and-drop is inconsistent and also competes
+      // with document scrolling. Touch/pen input therefore uses Pointer Events
+      // for both normal play and the position editor.
+      piece.addEventListener('pointerdown',e=>{
+        if(e.pointerType==='mouse'||!this.options.interactive)return;
+        const from=Number(piece.dataset.from);
+        const boardPiece=this.position?.board[from];
+        if(!this.options.editing&&(!boardPiece||colorOf(boardPiece)!==this.position.turn))return;
+        chessAudio.unlock();
+        this.beginPointerDrag(piece,e,from);
+      },{passive:false});
+      piece.addEventListener('pointermove',e=>this.movePointerDrag(e),{passive:false});
+      piece.addEventListener('pointerup',e=>this.finishPointerDrag(e),{passive:false});
+      piece.addEventListener('pointercancel',()=>this.cancelPointerDrag(true));
     });
   }
 
