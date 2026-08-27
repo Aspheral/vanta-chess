@@ -28,6 +28,12 @@ jobs:
           node --check src/ui/audio.js
           node --check sw.js
           node -e "JSON.parse(require('fs').readFileSync('manifest.webmanifest','utf8'))"
+      - name: Verify pinned Stockfish browser assets
+        run: |
+          BASE='https://cdn.jsdelivr.net/npm/stockfish.js@10.0.2'
+          curl -fLsS --range 0-0 -o /dev/null "$BASE/stockfish.wasm.js"
+          curl -fLsS --range 0-0 -o /dev/null "$BASE/stockfish.wasm"
+          curl -fLsS --range 0-0 -o /dev/null "$BASE/stockfish.js"
       - name: Run engine regression suite
         run: npm test
       - name: Run benchmark smoke test
