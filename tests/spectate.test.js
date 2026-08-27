@@ -32,11 +32,13 @@ test('spectate boot path and ultra profile are wired into the browser client',()
   assert.match(ui,/StockfishClient/);
 });
 
-test('Stockfish is pinned and has a browser-safe fallback',()=>{
+test('Stockfish is pinned to a portable single-thread browser package with JS fallback',()=>{
   const source=fs.readFileSync(new URL('../src/stockfish-client.js',import.meta.url),'utf8');
-  assert.match(source,/18\.0\.8/);
-  assert.match(source,/stockfish-18-lite-single\.js/);
-  assert.match(source,/stockfish-18-asm\.js/);
+  assert.match(source,/10\.0\.2/);
+  assert.match(source,/stockfish\.js@\$\{STOCKFISH_VERSION\}/);
+  assert.match(source,/stockfish\.wasm\.js/);
+  assert.match(source,/stockfish\.wasm/);
+  assert.match(source,/\['stockfish\.js',null,'Stockfish 10 JavaScript fallback'\]/);
   assert.match(source,/go movetime/);
 });
 
