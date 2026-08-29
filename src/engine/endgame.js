@@ -63,13 +63,26 @@ function materialProfile(position) {
   return { nonPawnMaterial, queens, rooks, minors, pawns };
 }
 
+const OPENING_PHASE = Object.freeze({
+  nonPawnMaterial: 6400,
+  queens: 2,
+  rooks: 4,
+  minors: 8,
+  pawns: 16,
+  weight: 0,
+  active: false,
+  deep: false,
+});
+
 /**
- * Fade the specialist in only after substantial material has disappeared.
- * Sparse positions that still contain queens remain king-safety positions,
- * not king-centralization endgames. The few-piece floors therefore apply only
- * after every queen is gone.
+ * The specialist begins where the opening-development model ends. This is both
+ * conceptually cleaner and important for speed: scanning material and passer
+ * geometry at every shallow opening node was costing practical depth without
+ * providing any endgame information.
  */
 export function endgamePhase(position) {
+  if (position.fullmove <= 14) return OPENING_PHASE;
+
   const profile = materialProfile(position);
   let weight;
   if (profile.queens === 0) {
@@ -102,12 +115,6 @@ function kingActivityFor(position, color) {
   return kingCentrality(king) * 13 + penetration * 4;
 }
 
-/**
- * In pawn endings, king activity does not mean abandoning every pawn around the
- * king. Pawns physically supported by the king form a mobile unit and should
- * not be scored worse merely because raw pawn-advance activity likes them three
- * squares farther up the board.
- */
 function kingPawnCohesionFor(position, color) {
   const king = position.kingSquare(color);
   if (king < 0) return 0;
