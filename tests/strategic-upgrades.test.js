@@ -75,11 +75,11 @@ test('opening move economy strongly prefers mobilizing a bishop over another kni
   assert.equal(gated.lines.some(line=>moveToUci(line.move)==='f1b5'),true);
 });
 
-test('opening move economy taxes the real Na4 knight tour before the later b5 attack',()=>{
+test('opening move economy does not punish a repeated minor move when that piece is already attacked',()=>{
   const p=playUci(['g1f3','g8f6','b1c3','d7d5','f3e5','d5d4']);
   const na4=p.moveFromUci('c3a4');
   assert.ok(na4);
-  assert.ok(openingMoveEconomyBonus(p,na4)<=-30,`Na4 economy bonus ${openingMoveEconomyBonus(p,na4)}`);
+  assert.ok(openingMoveEconomyBonus(p,na4)>=-5,`necessary Na4 retreat was overtaxed: ${openingMoveEconomyBonus(p,na4)}`);
 });
 
 test('opening move economy taxes repeated queen adventures while minors remain home',()=>{
