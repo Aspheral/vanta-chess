@@ -8,9 +8,7 @@ import {
 } from './tactics.js';
 import { strictHangingPieceGate, chooseSafestFallback } from './material-safety.js';
 import { openingMoveEconomyBonus, applyOpeningMoveEconomyGate } from './opening-economy.js';
-import {
-  endgameSpecialistScore, endgameVolatility, isEndgameCriticalMove,
-} from './endgame-specialist.js';
+import { endgameSpecialistMoveBonus } from './endgame-specialist.js';
 
 const INF = 1_000_000;
 const MATE_TT_BOUND = MATE_SCORE - 1000;
@@ -53,7 +51,7 @@ export class SearchEngine {
     const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 15)}`;
     const cached = this.evalCache.get(key);
     if (cached !== undefined) return cached;
-    const score = evaluate(position, perspective) + endgameSpecialistScore(position, perspective);
+    const score = evaluate(position, perspective);
     this.evalCache.set(key, score);
     if (this.evalCache.size > 40000) {
       let removed = 0;
@@ -230,7 +228,9 @@ export class SearchEngine {
         move,
         score,
         pv: [move, ...pv],
-        personality: personalityMoveBonus(position, move) + openingMoveEconomyBonus(position, move),
+        personality: personalityMoveBonus(position, move)
+          + openingMoveEconomyBonus(position, move)
+          + endgameSpecialistMoveBonus(position, move),
         exact,
       };
       lines.push(line);
@@ -296,13 +296,9 @@ export class SearchEngine {
     let bestScore = -INF;
     let bestMove = null;
     let bestPv = [];
-    // Tactical classification is only needed at depths where LMR can occur.
-    // Endgame volatility is a search-selectivity signal only; it does not alter
-    // Vanta's clock allocation.
     const volatile = depth >= 3 && (
       cheapVolatility(position) >= 52
       || hasNearPromotion(position)
-      || endgameVolatility(position) >= 45
     );
 
     for (let i = 0; i < moves.length; i++) {
@@ -316,8 +312,7 @@ export class SearchEngine {
         reduction = depth >= 5 && i >= 9 ? 2 : 1;
       }
 
-      const specialistExtension = depth <= 5 && isEndgameCriticalMove(position, move) ? 1 : 0;
-      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0) + specialistExtension);
+      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0));
       const reducedDepth = Math.max(0, fullDepth - reduction);
       let childPv = [];
       let score;
