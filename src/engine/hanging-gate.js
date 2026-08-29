@@ -7,9 +7,10 @@ export const HANGING_GATE_PROOF_MARGIN = 170;
 
 /**
  * Measure the clean material the opponent can win immediately after a root
- * candidate. Unlike the softer root tactical-risk score, this value is used as
- * a selection gate: if a competitive safe move exists, Vanta does not get to
- * hang a minor/rook/queen merely because its personality likes the position.
+ * candidate. Severity reflects the valuable piece Vanta actually gives up,
+ * not only the net SEE after Vanta later recaptures the cheap attacker. Thus a
+ * pawn taking a knight is still a strict-gate event even if the pawn itself can
+ * be recovered on the following move.
  */
 export function strictHangingPieceRisk(position, move, seeMemo = new Map()) {
   if (!move) return 100000;
@@ -25,9 +26,17 @@ export function strictHangingPieceRisk(position, move, seeMemo = new Map()) {
     if (!['n', 'b', 'r', 'q'].includes(victimType)) continue;
 
     const gain = staticExchangeEval(after, capture, seeMemo);
-    if (gain < HANGING_GATE_THRESHOLD) continue;
+    // A true exchange or clean piece loss is already a serious root event at
+    // roughly 1.5 pawns. Equal swaps and tactically recoverable captures remain
+    // below this floor and stay entirely search-authoritative.
+    if (gain < 150) continue;
+
     const victimValue = PIECE_VALUES[victimType] || 0;
-    const severity = Math.max(gain, Math.round(victimValue * 0.78));
+    const attackerValue = PIECE_VALUES[typeOf(capture.piece)] || 0;
+    const nominalLoss = Math.max(0, victimValue - Math.min(victimValue, attackerValue));
+    if (gain < 180 && nominalLoss < 180) continue;
+
+    const severity = Math.max(gain, nominalLoss, Math.round(victimValue * 0.82));
     worst = Math.max(worst, Math.min(1400, severity));
   }
 
