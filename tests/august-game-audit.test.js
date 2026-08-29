@@ -54,13 +54,13 @@ test('9.Qxg7 from the second August 29 loss cannot grab a pawn while abandoning 
 });
 
 test('forcing checks are not mechanically banned by the practical safety layer', () => {
-  // The rook on a1 is attacked by the bishop, but Qh5+ is a forcing check.
-  // Root safety must stay out of the way and let normal search prove or refute it.
-  const p = Position.fromFEN('4k3/8/8/7Q/8/8/1b6/R3K3 w Q - 0 1');
-  const check = p.moveFromUci('h5e8');
-  if (check) {
-    assert.equal(ignoredAttackedPieceLoss(p, check), 0);
-  }
+  // The rook on a1 is attacked by Bb2. Qe5+ is nevertheless forcing, so the
+  // practical guard must defer to normal search rather than veto the move.
+  const p = Position.fromFEN('4k3/8/8/7Q/8/8/1b6/R3K3 w - - 0 1');
+  const check = p.moveFromUci('h5e5');
+  assert.ok(check, 'expected Qe5+ to be legal');
+  assert.ok(p.makeMove(check).isInCheck(), 'Qe5 must give check');
+  assert.equal(ignoredAttackedPieceLoss(p, check), 0);
 });
 
 test('normal adaptive play now has a deeper deterministic floor and tighter style window', () => {
