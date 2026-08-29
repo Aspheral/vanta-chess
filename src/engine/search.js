@@ -6,6 +6,11 @@ import {
   staticExchangeEval, rootTacticalRisk, cheapVolatility, positionCriticality,
   hasNearPromotion, allocateRapidTime,
 } from './tactics.js';
+import { strictHangingPieceGate, chooseSafestFallback } from './material-safety.js';
+import { openingMoveEconomyBonus, applyOpeningMoveEconomyGate } from './opening-economy.js';
+import {
+  endgameSpecialistScore, endgameVolatility, isEndgameCriticalMove,
+} from './endgame-specialist.js';
 
 const INF = 1_000_000;
 const MATE_TT_BOUND = MATE_SCORE - 1000;
@@ -48,7 +53,7 @@ export class SearchEngine {
     const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 15)}`;
     const cached = this.evalCache.get(key);
     if (cached !== undefined) return cached;
-    const score = evaluate(position, perspective);
+    const score = evaluate(position, perspective) + endgameSpecialistScore(position, perspective);
     this.evalCache.set(key, score);
     if (this.evalCache.size > 40000) {
       let removed = 0;
@@ -126,7 +131,7 @@ export class SearchEngine {
       const legal = allLegal.filter(move => !excluded.has(moveToUci(move)));
       const fallback = legal.length ? legal : allLegal;
       if (fallback.length) {
-        const move = fallback[0];
+        const move = chooseSafestFallback(position, fallback, this.seeMemo) || fallback[0];
         best = {
           bestMove: move,
           score: -this.staticEval(position.makeMove(move)),
@@ -225,7 +230,7 @@ export class SearchEngine {
         move,
         score,
         pv: [move, ...pv],
-        personality: personalityMoveBonus(position, move),
+        personality: personalityMoveBonus(position, move) + openingMoveEconomyBonus(position, move),
         exact,
       };
       lines.push(line);
@@ -292,8 +297,13 @@ export class SearchEngine {
     let bestMove = null;
     let bestPv = [];
     // Tactical classification is only needed at depths where LMR can occur.
-    // Avoid paying for full board scans at shallow nodes.
-    const volatile = depth >= 3 && (cheapVolatility(position) >= 52 || hasNearPromotion(position));
+    // Endgame volatility is a search-selectivity signal only; it does not alter
+    // Vanta's clock allocation.
+    const volatile = depth >= 3 && (
+      cheapVolatility(position) >= 52
+      || hasNearPromotion(position)
+      || endgameVolatility(position) >= 45
+    );
 
     for (let i = 0; i < moves.length; i++) {
       if (this.timeUp()) break;
@@ -306,7 +316,8 @@ export class SearchEngine {
         reduction = depth >= 5 && i >= 9 ? 2 : 1;
       }
 
-      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0));
+      const specialistExtension = depth <= 5 && isEndgameCriticalMove(position, move) ? 1 : 0;
+      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0) + specialistExtension);
       const reducedDepth = Math.max(0, fullDepth - reduction);
       let childPv = [];
       let score;
@@ -465,7 +476,10 @@ export class SearchEngine {
     }
 
     const exactLines = lines.filter(line => line.exact !== false);
-    const pool = exactLines.length ? exactLines : lines;
+    const rawPool = exactLines.length ? exactLines : lines;
+    const hangingGate = strictHangingPieceGate(position, rawPool, this.seeMemo);
+    const economyGate = applyOpeningMoveEconomyGate(position, hangingGate.lines);
+    const pool = economyGate.lines.length ? economyGate.lines : hangingGate.lines.length ? hangingGate.lines : rawPool;
     const bestScore = Math.max(...pool.map(line => line.score));
 
     if (Math.abs(bestScore) >= MATE_SCORE - 1000) {
