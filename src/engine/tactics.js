@@ -83,6 +83,36 @@ function countSquareAttackers(position, square, color) {
   return count;
 }
 
+function pieceAttacksSquare(position, from, target) {
+  const piece = position.board[from];
+  if (!piece) return false;
+  const color = colorOf(piece), type = typeOf(piece);
+  const [fr, fc] = rowCol(from), [tr, tc] = rowCol(target);
+  const dr = tr - fr, dc = tc - fc;
+  if (type === 'p') {
+    const step = color === 'w' ? -1 : 1;
+    return dr === step && Math.abs(dc) === 1;
+  }
+  if (type === 'n') return KNIGHT_DELTAS.some(([r, c]) => r === dr && c === dc);
+  if (type === 'k') return Math.max(Math.abs(dr), Math.abs(dc)) === 1;
+  const dirs = type === 'b' ? BISHOP_DIRS : type === 'r' ? ROOK_DIRS : [...BISHOP_DIRS, ...ROOK_DIRS];
+  for (const [sr, sc] of dirs) {
+    if (sr === 0 && dr !== 0) continue;
+    if (sc === 0 && dc !== 0) continue;
+    if (sr !== 0 && sc !== 0 && Math.abs(dr) !== Math.abs(dc)) continue;
+    if (dr && Math.sign(dr) !== Math.sign(sr)) continue;
+    if (dc && Math.sign(dc) !== Math.sign(sc)) continue;
+    let r = fr + sr, c = fc + sc;
+    while (inBounds(r, c)) {
+      const sq = r * 8 + c;
+      if (sq === target) return true;
+      if (position.board[sq]) break;
+      r += sr; c += sc;
+    }
+  }
+  return false;
+}
+
 function promotionStopperCount(position, square, color) {
   const occupant = position.board[square];
   const blocker = occupant && colorOf(occupant) === color ? 1 : 0;
@@ -180,6 +210,27 @@ export function hasLooseMajor(position, color = position.turn) {
     if (position.isSquareAttacked(sq, enemy)) return true;
   }
   return false;
+}
+
+/**
+ * Root-only urgency for pieces that are already under fire. Previously the
+ * adaptive clock noticed loose rooks/queens but treated a pawn fork of two
+ * minor pieces as a quiet position. That is exactly backwards for practical
+ * rapid chess, where an attacked knight can be the whole position.
+ */
+export function endangeredPieceUrgency(position, color = position.turn) {
+  const enemy = opposite(color);
+  let urgency = 0;
+  for (let sq = 0; sq < 64; sq++) {
+    const piece = position.board[sq];
+    if (!piece || colorOf(piece) !== color) continue;
+    const type = typeOf(piece);
+    if (!['n', 'b', 'r', 'q'].includes(type) || !position.isSquareAttacked(sq, enemy)) continue;
+    const defenders = countSquareAttackers(position, sq, color);
+    const base = type === 'q' ? 28 : type === 'r' ? 24 : 18;
+    urgency += base + (defenders === 0 ? 16 : defenders === 1 ? 7 : 2);
+  }
+  return Math.min(52, urgency);
 }
 
 function immediateMateAvailable(position) {
@@ -281,18 +332,68 @@ function forcedPromotionRiskAfterPush(position, seeMemo = new Map()) {
   return Number.isFinite(bestDefenseRisk) ? bestDefenseRisk : 0;
 }
 
+function abandonedPieceRisk(before, after, color, seeMemo) {
+  // A forcing check may deliberately leave a piece attacked. Let the ordinary
+  // search decide those combinations rather than mechanically banning them.
+  if (after.isInCheck()) return 0;
+  const enemy = opposite(color);
+  let risk = 0;
+  const captures = after.legalMoves({ capturesOnly: true });
+  for (let sq = 0; sq < 64; sq++) {
+    const piece = before.board[sq];
+    if (!piece || colorOf(piece) !== color || !['n', 'b', 'r', 'q'].includes(typeOf(piece))) continue;
+    if (!before.isSquareAttacked(sq, enemy) || after.board[sq] !== piece) continue;
+    let bestGain = 0;
+    for (const capture of captures) {
+      if (capture.to !== sq || !(capture.flags & FLAGS.CAPTURE)) continue;
+      bestGain = Math.max(bestGain, staticExchangeEval(after, capture, seeMemo));
+    }
+    if (bestGain >= 240) {
+      const defenders = countSquareAttackers(after, sq, color);
+      const base = defenders === 0 ? 720 : 650;
+      risk = Math.max(risk, base + Math.min(220, Math.max(0, bestGain - 240)));
+    }
+  }
+  return risk;
+}
+
+function forkThreatRisk(position, attackerSquare, defenderColor, seeMemo) {
+  const attacker = position.board[attackerSquare];
+  if (!attacker || colorOf(attacker) !== opposite(defenderColor)) return 0;
+  const targets = [];
+  for (let sq = 0; sq < 64; sq++) {
+    const piece = position.board[sq];
+    if (!piece || colorOf(piece) !== defenderColor || !['n', 'b', 'r', 'q'].includes(typeOf(piece))) continue;
+    if (pieceAttacksSquare(position, attackerSquare, sq)) targets.push(valueOf(piece));
+  }
+  if (targets.length < 2) return 0;
+
+  // If the fork piece itself can simply be captured without losing material,
+  // it is not a real fork.
+  let bestCapture = -Infinity;
+  for (const capture of position.legalMoves({ capturesOnly: true })) {
+    if (capture.to !== attackerSquare || !(capture.flags & FLAGS.CAPTURE)) continue;
+    bestCapture = Math.max(bestCapture, staticExchangeEval(position, capture, seeMemo));
+  }
+  if (bestCapture >= -40) return 0;
+
+  targets.sort((a, b) => b - a);
+  const secondTarget = targets[1];
+  return 610 + Math.min(260, Math.max(0, secondTarget - 250));
+}
+
 /**
  * A compact tactical seatbelt used only at the root. It asks whether the
  * opponent has mate, promotion, a clean material win, a critical promotion
- * defender collapse, or a forcing checking sequence. This is not a replacement
- * for search; it patches the exact shallow-horizon failures humans notice in
- * practical endgames.
+ * defender collapse, a quiet fork, or a forcing checking sequence. This is
+ * not a replacement for search; it protects shallow practical horizons.
  */
 export function rootTacticalRisk(position, move, seeMemo = new Map()) {
   if (!move) return MATE_RISK;
   const after = position.makeMove(move);
   const us = position.turn;
   let risk = promotionDefenseCollapseRisk(position, after, us);
+  risk = Math.max(risk, abandonedPieceRisk(position, after, us, seeMemo));
   const replies = after.legalMoves();
 
   for (const reply of replies) {
@@ -305,6 +406,13 @@ export function rootTacticalRisk(position, move, seeMemo = new Map()) {
 
     if (reply.promotion) risk = Math.max(risk, promotionAftermathRisk(after, reply, seeMemo));
     if (reply.flags & FLAGS.CAPTURE) risk = Math.max(risk, staticExchangeEval(after, reply, seeMemo));
+
+    // Quiet pawn/knight/slider forks are tactical too. The old seatbelt only
+    // looked at checks and captures, so a move such as ...Bg4 could walk two
+    // minors into f3 and still look "quiet" at the root.
+    if (!(reply.flags & FLAGS.CAPTURE) && !reply.promotion) {
+      risk = Math.max(risk, forkThreatRisk(afterReply, reply.to, us, seeMemo));
+    }
 
     if (isCriticalPassedPawnPush(after, reply) && pawnProgress(reply.to, colorOf(reply.piece)) >= 5) {
       risk = Math.max(risk, forcedPromotionRiskAfterPush(afterReply, seeMemo));
@@ -344,6 +452,7 @@ export function positionCriticality(position) {
   let score = cheapVolatility(position) + advancedPasserVolatility(position);
 
   // These are useful time-management signals, but intentionally root-only.
+  score += endangeredPieceUrgency(position, position.turn);
   if (hasLooseMajor(position, position.turn)) score += 18;
   if (hasLooseMajor(position, opposite(position.turn))) score += 12;
   const king = position.kingSquare(position.turn);

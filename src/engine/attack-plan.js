@@ -92,11 +92,16 @@ function developedMinorStats(position, color) {
     if (!homeMatch) active++;
   }
 
-  const denominator = Math.max(1, surviving);
+  // The army starts with four minor-piece slots. A captured knight or bishop
+  // must never make the remaining pieces look more developed by shrinking the
+  // denominator. Losing a soldier is not mobilizing one.
+  const originalSlots = home.minors.length;
   return {
     surviving,
     active,
-    ratio: clamp(active / denominator, 0, 1),
+    casualties: Math.max(0, originalSlots - surviving),
+    unmobilized: Math.max(0, originalSlots - active),
+    ratio: clamp(active / originalSlots, 0, 1),
   };
 }
 
@@ -206,7 +211,10 @@ export function attackReadiness(position, color = position.turn) {
     + queen * 6
     + participation.ratio * 14;
 
-  if (minors.surviving >= 3 && minors.active < 3) score = Math.min(score, 64);
+  // Casualties can never unlock assault mode. The material evaluator already
+  // prices the lost piece, so this is only an anti-inflation guard for style.
+  if (minors.casualties) score -= Math.min(14, minors.casualties * 7);
+  if (minors.active < 3) score = Math.min(score, 64);
   if (king < 0.45) score = Math.min(score, 68);
 
   score = Math.round(clamp(score, 0, 100));
@@ -228,6 +236,8 @@ export function attackReadiness(position, color = position.turn) {
     assaultMultiplier: Number(assaultMultiplier.toFixed(3)),
     developedMinors: minors.active,
     survivingMinors: minors.surviving,
+    minorCasualties: minors.casualties,
+    unmobilizedMinorSlots: minors.unmobilized,
     minorDevelopmentRatio: Number(minors.ratio.toFixed(3)),
     kingReadiness: Number(king.toFixed(3)),
     rooksConnected: Boolean(rooks),
