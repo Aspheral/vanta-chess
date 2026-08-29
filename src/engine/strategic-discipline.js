@@ -2,6 +2,7 @@ import {
   WHITE, BLACK, PIECE_VALUES, colorOf, typeOf, rowCol, opposite, inBounds,
 } from '../chess/constants.js';
 import { FLAGS } from '../chess/position.js';
+import { staticExchangeEval } from './tactics.js';
 
 const HOME = Object.freeze({
   [WHITE]: Object.freeze({
@@ -24,10 +25,6 @@ const HOME = Object.freeze({
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
-}
-
-function signed(color, perspective) {
-  return color === perspective ? 1 : -1;
 }
 
 function squareDistance(a, b) {
@@ -299,4 +296,48 @@ export function isEndgameCriticalMove(position, move) {
   }
   if (type === 'k' && phase.deep) return moveApproachesCriticalPawn(position, move, position.turn);
   return false;
+}
+
+export function rootImmediateMaterialLoss(position, move, memo = new Map()) {
+  if (!move) return 100000;
+  const after = position.makeMove(move);
+  let worst = 0;
+  for (const reply of after.legalMoves({ capturesOnly: true })) {
+    if (!(reply.flags & FLAGS.CAPTURE) && !reply.promotion) continue;
+    worst = Math.max(worst, staticExchangeEval(after, reply, memo));
+  }
+  return Math.max(0, Math.round(worst));
+}
+
+export function quietTacticalThreatScore(position, move) {
+  if (!move || (move.flags & FLAGS.CAPTURE) || move.promotion) return 0;
+  const us = position.turn;
+  const enemy = opposite(us);
+  const after = position.makeMove(move);
+  if (after.isInCheck()) return 0;
+
+  const newlyAttacked = [];
+  for (let sq = 0; sq < 64; sq++) {
+    const piece = after.board[sq];
+    if (!piece || colorOf(piece) !== enemy) continue;
+    const type = typeOf(piece);
+    if (!['n', 'b', 'r', 'q'].includes(type)) continue;
+    if (!after.isSquareAttacked(sq, us) || position.isSquareAttacked(sq, us)) continue;
+    const value = PIECE_VALUES[type] || 0;
+    newlyAttacked.push({ value, sq });
+  }
+
+  if (!newlyAttacked.length) return 0;
+  newlyAttacked.sort((a, b) => b.value - a.value);
+  if (newlyAttacked.length >= 2) {
+    return 440 + Math.min(260, Math.round((newlyAttacked[0].value + newlyAttacked[1].value - 600) * 0.35));
+  }
+
+  const target = newlyAttacked[0];
+  if (target.value >= PIECE_VALUES.q) return 390;
+  if (target.value >= PIECE_VALUES.r) return 340;
+
+  const defenders = after.isSquareAttacked(target.sq, enemy);
+  if (!defenders && target.value >= PIECE_VALUES.n) return 310;
+  return 0;
 }
