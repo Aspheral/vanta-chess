@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Position, moveToUci } from '../src/chess/position.js';
 import { SearchEngine } from '../src/engine/search.js';
 import { adaptiveStrengthProfile } from '../src/engine/adaptive-strength.js';
+import { isPonderBranchPracticallySafe } from '../src/engine/controller.js';
 import {
   AVOIDABLE_LOSS_FLOOR,
   ignoredAttackedPieceLoss,
@@ -61,6 +62,14 @@ test('forcing checks are not mechanically banned by the practical safety layer',
   assert.ok(check, 'expected Qe5+ to be legal');
   assert.ok(p.makeMove(check).isInCheck(), 'Qe5 must give check');
   assert.equal(ignoredAttackedPieceLoss(p, check), 0);
+});
+
+test('an unsafe quiet ponder hit is discarded instead of bypassing root safety', () => {
+  // Position after Vanta's 5.f4, before the opponent plays ...b5. A cached
+  // ponder line that planned 6.c3 must be rejected once ...b5 attacks Na4.
+  const beforeB5 = 'rnb1kb1r/ppp1pppp/3q1n2/4N3/N2p1P2/8/PPPPP1PP/R1BQKB1R b KQkq - 0 5';
+  const branch = { opponentMove: 'b7b5', engineMove: 'c2c3', evaluation: 0, depth: 5, continuation: [] };
+  assert.equal(isPonderBranchPracticallySafe(beforeB5, 'b7b5', branch), false);
 });
 
 test('normal adaptive play now has a deeper deterministic floor and tighter style window', () => {
