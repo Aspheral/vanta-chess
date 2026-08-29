@@ -125,8 +125,8 @@ export function endgamePhase(position) {
   const material = nonPawnMaterial(position);
   const queenless = material.queens === 0;
   const lowMaterial = material.total <= 3000;
-  const deep = material.total <= 1700 || (queenless && material.rooks <= 2 && material.minors <= 2);
-  const weight = deep ? 1 : queenless ? 0.72 : lowMaterial ? 0.42 : 0;
+  const deep = queenless && (material.total <= 1700 || (material.rooks <= 2 && material.minors <= 2));
+  const weight = !queenless ? 0 : deep ? 1 : lowMaterial ? 0.82 : 0.58;
   return { ...material, queenless, deep, weight };
 }
 
@@ -359,9 +359,6 @@ export function quietTacticalThreatScore(position, move) {
   const after = position.makeMove(move);
   if (after.isInCheck()) return 0;
 
-  // The piece that just moved can itself create a quiet fork even when one of
-  // its targets was already attacked by a different piece. This is the f2-f3
-  // pattern from the rapid game: the pawn on f3 directly attacks both e4 and g4.
   const directTargets = [];
   for (let sq = 0; sq < 64; sq++) {
     const piece = after.board[sq];
@@ -373,8 +370,6 @@ export function quietTacticalThreatScore(position, move) {
     return 440 + Math.min(260, Math.round((directTargets[0] + directTargets[1] - 600) * 0.35));
   }
 
-  // Also catch discovered attacks where the moving piece is only the door that
-  // opens a rook/bishop/queen line.
   const newlyAttacked = [];
   for (let sq = 0; sq < 64; sq++) {
     const piece = after.board[sq];
