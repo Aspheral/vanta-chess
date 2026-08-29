@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { replayPgn, fenBeforePly } from '../src/chess/pgn.js';
 import { Position, moveToUci } from '../src/chess/position.js';
 import { SearchEngine } from '../src/engine/search.js';
+import { searchWithPracticalSafety } from '../src/engine/practical-safety.js';
 import { evaluateBreakdown } from '../src/engine/evaluation.js';
 import { attackReadiness } from '../src/engine/attack-plan.js';
 import { positionCriticality, allocateRapidTime, rootTacticalRisk } from '../src/engine/tactics.js';
@@ -65,8 +66,9 @@ test('after 6.f3 the double-attacked minors make the position critical and Vanta
   const tq=allocateRapidTime(quiet,600000,0);
   assert.ok(t.hardTimeMs>=tq.hardTimeMs+500,`double-attack crisis got too little extra time: ${JSON.stringify({t,tq})}`);
 
-  const r=engine(1100,4).search(p,{moveTimeMs:1100,maxDepth:4});
+  const r=searchWithPracticalSafety(engine(1100,4),p,{moveTimeMs:1100,maxDepth:4});
   assert.notEqual(moveToUci(r.move),'c6e5',`Vanta still ignored the attacked e4 knight: ${JSON.stringify(r.candidates)}`);
+  assert.ok(r.practicalSafety?.exclusions?.some(item=>item.uci==='c6e5'),`Nxe5 was not excluded by root safety: ${JSON.stringify(r.practicalSafety)}`);
 });
 
 test('while already materially behind Vanta rejects the speculative Rxd4 exchange sacrifice',()=>{
