@@ -295,6 +295,15 @@ export function openingMoveDiscipline(position, move) {
     }
   }
 
+  if (type === 'n' && !forcing) {
+    const [toRow, toFile] = rowCol(move.to);
+    // A/H-file knight excursions are especially costly early because they
+    // slash retreat mobility. Back-rank retreats are less severe but still a
+    // sign that development has gone backwards.
+    if (toFile === 0 || toFile === 7) bonus -= 40;
+    else if (toRow === 0 || toRow === 7) bonus -= 15;
+  }
+
   if (type === 'q' && minors.active < 3 && !forcing) {
     const repeatedQueenMove = move.from !== home.queen;
     bonus -= repeatedQueenMove ? 46 : 25;
