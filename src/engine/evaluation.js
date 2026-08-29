@@ -139,7 +139,7 @@ function pawnStructure(position, perspective, attacks) {
       if(passed){
         const progress=Math.max(0,Math.min(6,color===WHITE?6-r:r-1)); let bonus=PASSER_BONUS[progress];
         const enemy=opposite(color),frontRow=r+dir;
-        if(frontRow>=0&&frontRow<8){const front=frontRow*8+c,blocker=position.board[front];if(blocker&&colorOf(blocker)===enemy)bonus*=attacks[color].counts[front]>attacks[enemy].counts[front]?.82:.62;}
+        if(frontRow>=0&&frontRow<8){const front=frontRow*8+c,blocker=position.board[front];if(blocker&&colorOf(blocker)===enemy)bonus*=attacks[color].counts[front]>attacks[enemy].counts[front]?0.82:0.62;}
         if(attacks[color].counts[sq])bonus*=1.12;
         if(progress>=5){const promoSq=color===WHITE?c:56+c;if(!position.board[promoSq]&&attacks[color].counts[promoSq]>=attacks[enemy].counts[promoSq])bonus+=55;}
         total+=sign*Math.round(bonus);
@@ -150,17 +150,17 @@ function pawnStructure(position, perspective, attacks) {
 }
 
 function homeInfo(color){return color===WHITE?{knights:[[57,'N'],[62,'N']],bishops:[[58,'B'],[61,'B']],queen:[59,'Q'],king:[60,'K'],castles:[62,58],rights:'KQ'}:{knights:[[1,'n'],[6,'n']],bishops:[[2,'b'],[5,'b']],queen:[3,'q'],king:[4,'k'],castles:[6,2],rights:'kq'};}
-function undevelopedMinorCount(position,color){const h=homeInfo(color);let n=0;for(const [sq,p] of [...h.knights,...h.bishops])if(position.board[sq]===p)n++;return n;}
+function minorDeploymentStats(position,color){const h=homeInfo(color),home=[...h.knights,...h.bishops];let surviving=0,active=0;for(let sq=0;sq<64;sq++){const piece=position.board[sq];if(!piece||colorOf(piece)!==color||!['n','b'].includes(typeOf(piece)))continue;surviving++;const onOriginalHome=home.some(([homeSq,homePiece])=>homeSq===sq&&homePiece===piece);if(!onOriginalHome)active++;}return{surviving,active,casualties:Math.max(0,4-surviving),unmobilized:Math.max(0,4-active)};}
+function undevelopedMinorCount(position,color){return minorDeploymentStats(position,color).unmobilized;}
 
 function developmentScore(position,perspective){
   if(position.fullmove>14)return 0; let total=0;
   for(const color of [WHITE,BLACK]){
-    const sign=signed(color,perspective),h=homeInfo(color);let developed=0;
-    for(const [sq,p] of [...h.knights,...h.bishops])if(position.board[sq]!==p)developed++;
+    const sign=signed(color,perspective),h=homeInfo(color),minors=minorDeploymentStats(position,color),developed=minors.active;
     let score=developed*12; const kingSq=position.kingSquare(color);
     if(h.castles.includes(kingSq))score+=28;
     else if(kingSq!==h.king[0]&&position.fullmove<=11)score-=20;
-    const undeveloped=4-developed;
+    const undeveloped=minors.unmobilized;
     if(kingSq===h.king[0]&&position.fullmove>=7&&undeveloped>=2)score-=Math.min(20,(position.fullmove-6)*3+undeveloped*3);
     if(position.board[h.queen[0]]!==h.queen[1]&&developed<2&&position.fullmove<=10)score-=(2-developed)*12;
     total+=sign*score;
