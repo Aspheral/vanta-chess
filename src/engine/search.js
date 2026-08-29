@@ -1,5 +1,5 @@
 import { SearchEngine as CoreSearchEngine } from './search-core.js';
-import { rootStrategicAdjustment, rootSafetyRisk } from './quality.js';
+import { rootStrategicAdjustment, rootSafetyRisk, avoidableMaterialRisk } from './quality.js';
 
 export class SearchEngine extends CoreSearchEngine {
   searchRoot(position, depth, options = {}) {
@@ -21,19 +21,24 @@ export class SearchEngine extends CoreSearchEngine {
     const pool = exact.length ? exact : lines;
     const bestScore = Math.max(...pool.map(line => line.score));
     const selectedRisk = rootSafetyRisk(position, selected.move);
+    const selectedAvoidableRisk = avoidableMaterialRisk(position, selected.move);
 
-    // A cleanly hanging/trapped minor or major is a safety failure, not a style
-    // preference. Permit roughly a piece-value-sized rescue window because a
-    // shallow evaluation can be wrong by the value of the unit it is about to
-    // lose. The gate is narrow: it only activates after root safety has already
-    // demonstrated severe immediate material or trap risk, and the replacement
-    // itself must be genuinely safe.
-    if (selectedRisk >= 560) {
-      const margin = selectedRisk >= 820 ? 430 : 380;
+    // A newly hanging or trapped minor/major is a safety failure, not a style
+    // preference. Ambient tactical danger is deliberately excluded from this
+    // rescue comparison because a messy position can make every legal move look
+    // risky to the generic root seatbelt. The replacement only needs to avoid
+    // the new material/trap failure; the core engine remains responsible for
+    // comparing its ordinary tactical risk and objective score.
+    if (selectedAvoidableRisk >= 560) {
+      const margin = selectedAvoidableRisk >= 820 ? 430 : 380;
       const alternatives = pool
         .filter(line => line.score >= bestScore - margin)
-        .map(line => ({ ...line, safetyRisk: rootSafetyRisk(position, line.move) }))
-        .filter(line => line.safetyRisk < 280)
+        .map(line => ({
+          ...line,
+          safetyRisk: rootSafetyRisk(position, line.move),
+          avoidableRisk: avoidableMaterialRisk(position, line.move),
+        }))
+        .filter(line => line.avoidableRisk < 280)
         .sort((a, b) => (b.score + (b.personality || 0) * 0.35) - (a.score + (a.personality || 0) * 0.35));
 
       if (alternatives.length) {
@@ -43,10 +48,10 @@ export class SearchEngine extends CoreSearchEngine {
           score: rescue.score + (rescue.personality || 0),
           objectiveScore: rescue.score,
           pv: rescue.pv,
-          risk: rescue.safetyRisk,
+          risk: Math.max(rescue.safetyRisk, rescue.avoidableRisk),
         };
       }
-      return { ...selected, risk: Math.max(selected.risk || 0, selectedRisk) };
+      return { ...selected, risk: Math.max(selected.risk || 0, selectedRisk, selectedAvoidableRisk) };
     }
 
     // Medium tactical risk was already considered by the core seatbelt. Never
