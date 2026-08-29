@@ -6,6 +6,10 @@ import {
   staticExchangeEval, rootTacticalRisk, cheapVolatility, positionCriticality,
   hasNearPromotion, allocateRapidTime,
 } from './tactics.js';
+import {
+  strategicEvaluation, strategicMoveBonus, forcingQuietThreatScore,
+  quietThreatMoves, isEndgameCriticalMove,
+} from './strategy.js';
 
 const INF = 1_000_000;
 const MATE_TT_BOUND = MATE_SCORE - 1000;
@@ -48,7 +52,7 @@ export class SearchEngine {
     const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 15)}`;
     const cached = this.evalCache.get(key);
     if (cached !== undefined) return cached;
-    const score = evaluate(position, perspective);
+    const score = evaluate(position, perspective) + strategicEvaluation(position, perspective);
     this.evalCache.set(key, score);
     if (this.evalCache.size > 40000) {
       let removed = 0;
@@ -225,7 +229,7 @@ export class SearchEngine {
         move,
         score,
         pv: [move, ...pv],
-        personality: personalityMoveBonus(position, move),
+        personality: personalityMoveBonus(position, move) + strategicMoveBonus(position, move),
         exact,
       };
       lines.push(line);
@@ -264,6 +268,10 @@ export class SearchEngine {
     let priorOccurrences = 0;
     for (const hash of pathHashes) if (hash === position.hash) priorOccurrences++;
     if (priorOccurrences >= 2) return this.repetitionUtility(position);
+    // A second occurrence is not a draw yet, but in quiet shallow search it is
+    // already a signal that the line is making no progress. Avoid treating a
+    // two-move shuffle as equally attractive while ahead.
+    if (priorOccurrences >= 1 && depth <= 2 && position.halfmove >= 4) return this.cycleUtility(position);
     if (position.halfmove >= 100) return 0;
 
     const inCheck = position.isInCheck();
@@ -301,12 +309,15 @@ export class SearchEngine {
       const next = position.makeMove(move);
       const quiet = !(move.flags & FLAGS.CAPTURE) && !move.promotion;
       const givesCheck = depth >= 3 && next.isInCheck();
+      const quietThreat = quiet && depth >= 2 && forcingQuietThreatScore(position, move) >= 100;
+      const endgameCritical = isEndgameCriticalMove(position, move);
       let reduction = 0;
-      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !volatile) {
+      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !quietThreat && !endgameCritical && !volatile) {
         reduction = depth >= 5 && i >= 9 ? 2 : 1;
       }
 
-      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0));
+      const extension = endgameCritical && depth <= 4 ? 1 : 0;
+      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0) + extension);
       const reducedDepth = Math.max(0, fullDepth - reduction);
       let childPv = [];
       let score;
@@ -392,15 +403,29 @@ export class SearchEngine {
 
     if (qply > 8 || ply > 18 || this.timeUp()) return inCheck ? alpha : Math.max(alpha, stand);
 
-    // Quiet checks are useful in volatile horizon nodes, but searching them at
-    // every q-node was a large speed regression. Captures and all promotions
-    // remain present unconditionally.
-    if (!inCheck && qply === 0 && cheapVolatility(position) >= 48) {
+    // Quiet checks are useful in volatile horizon nodes. At qply zero we also
+    // admit a very small set of high-value quiet threats such as pawn forks,
+    // discovered attacks and advanced passed-pawn pushes. This is threat
+    // quiescence, not a second full-width search.
+    if (!inCheck && qply === 0) {
       const existing = new Set(moves.map(moveToUci));
-      for (const move of position.legalMoves()) {
-        if (existing.has(moveToUci(move))) continue;
-        if (move.flags & FLAGS.CAPTURE || move.promotion) continue;
-        if (position.makeMove(move).isInCheck()) moves.push(move);
+      if (cheapVolatility(position) >= 48) {
+        for (const move of position.legalMoves()) {
+          if (existing.has(moveToUci(move))) continue;
+          if (move.flags & FLAGS.CAPTURE || move.promotion) continue;
+          if (position.makeMove(move).isInCheck()) {
+            moves.push(move);
+            existing.add(moveToUci(move));
+          }
+        }
+      }
+      if (ply <= 8) {
+        for (const move of quietThreatMoves(position, 3)) {
+          const uci = moveToUci(move);
+          if (existing.has(uci)) continue;
+          moves.push(move);
+          existing.add(uci);
+        }
       }
     }
 
@@ -443,7 +468,11 @@ export class SearchEngine {
           score += Math.max(-12000, Math.min(30000, see * 30));
         }
       }
-      if (ply <= 1 && !(move.flags & FLAGS.CAPTURE) && !move.promotion && position.makeMove(move).isInCheck()) score += 62_000;
+      if (ply <= 1 && !(move.flags & FLAGS.CAPTURE) && !move.promotion) {
+        if (position.makeMove(move).isInCheck()) score += 62_000;
+        const threat = forcingQuietThreatScore(position, move);
+        if (threat >= 100) score += 38_000 + Math.min(20_000, threat * 60);
+      }
       if (killers[0] === u) score += 18_000;
       else if (killers[1] === u) score += 14_000;
       score += Math.min(30000, this.history.get(u) || 0);
@@ -498,6 +527,16 @@ export class SearchEngine {
 
     let pick = scored[0] || pool[0];
 
+    // A clean hanging minor/rook/queen is not merely an aesthetic penalty. If
+    // a safe line is still objectively competitive, take it. Search can still
+    // play a genuine sacrifice when the compensation is worth >~1.4 pawns.
+    if (pick?.risk >= 650) {
+      const safeCompetitive = scored
+        .filter(line => line.risk < 300 && line.score >= bestScore - 140)
+        .sort((a, b) => b.composite - a.composite);
+      if (safeCompetitive.length) pick = safeCompetitive[0];
+    }
+
     // A short forced rook/queen loss can widen the normal personality window;
     // smaller tactical concessions remain search-authoritative so sacrifices
     // are not mechanically banned.
@@ -519,6 +558,14 @@ export class SearchEngine {
       pv: pick.pv,
       risk: pick.risk || 0,
     };
+  }
+
+  cycleUtility(position) {
+    const staticScore = this.staticEval(position);
+    const material = materialBalance(position, position.turn);
+    if (material >= 180 || staticScore >= 120) return -110;
+    if (material <= -180 || staticScore <= -120) return 32;
+    return -12;
   }
 
   repetitionUtility(position) {
