@@ -30,6 +30,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y stockfish
           test -x /usr/games/stockfish
+      - name: Select optimized production search path
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/engine/stress-match.js')
+          s=p.read_text()
+          s=s.replace("import { SearchEngine } from './search.js';", "import { StrongSearchEngine as SearchEngine } from './strong-search.js';")
+          p.write_text(s)
+          PY
       - name: Play paired randomized opening shard
         env:
           STRESS_GAMES: '50'
