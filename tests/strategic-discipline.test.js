@@ -69,15 +69,24 @@ test('endgame specialist rewards placing a rook behind its passed pawn',()=>{
     `${strategicPositionScore(behind,'w')} vs ${strategicPositionScore(side,'w')}`);
 });
 
-test('the DevTheExpertBack knight hang is a hard material-safety failure and is rejected',()=>{
+test('Vanta prevents the DevTheExpertBack knight trap at 4.Na4 instead of pretending move six can save it',()=>{
   const replay=replayPgn(DEV_LOSS);
-  const p=Position.fromFEN(fenBeforePly(replay,11)); // before 6.c3, Na4 is attacked by b5
-  const c3=p.moveFromUci('c2c3');
-  assert.ok(c3);
-  // Legal SEE is net exchange value: knight (320) lost to pawn (100) is ~220.
-  assert.ok(rootImmediateMaterialLoss(p,c3)>=200,`loss ${rootImmediateMaterialLoss(p,c3)}`);
-  const r=engine(900,3).search(p,{moveTimeMs:900,maxDepth:3});
-  assert.notEqual(moveToUci(r.move),'c2c3',JSON.stringify(r.candidates));
+  const p=Position.fromFEN(fenBeforePly(replay,7)); // before 4.Na4
+  const na4=p.moveFromUci('c3a4');
+  assert.ok(na4);
+  assert.ok(openingMoveDiscipline(p,na4)<=-25,`Na4 discipline ${openingMoveDiscipline(p,na4)}`);
+  const r=engine(950,3).search(p,{moveTimeMs:950,maxDepth:3});
+  assert.notEqual(moveToUci(r.move),'c3a4',JSON.stringify(r.candidates));
+});
+
+test('after the trap is sprung every legal Na4 retreat already loses the knight immediately',()=>{
+  const replay=replayPgn(DEV_LOSS);
+  const p=Position.fromFEN(fenBeforePly(replay,11)); // after ...b5
+  const retreats=p.legalMoves().filter(move=>move.from===32); // a4
+  assert.ok(retreats.length>=2);
+  for(const move of retreats) {
+    assert.ok(rootImmediateMaterialLoss(p,move)>=200,`${moveToUci(move)} loss ${rootImmediateMaterialLoss(p,move)}`);
+  }
 });
 
 test('a pawn grab cannot outrank saving the attacked Nb5 in the a6 game',()=>{
