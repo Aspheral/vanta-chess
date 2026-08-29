@@ -7,8 +7,8 @@ import {
   hasNearPromotion, allocateRapidTime,
 } from './tactics.js';
 import {
-  strategicPositionScore, openingMoveDiscipline, isEndgameCriticalMove,
-  rootImmediateMaterialLoss, quietTacticalThreatScore,
+  endgameStrategicScore, openingMoveDiscipline, isEndgameCriticalMove,
+  isEndgamePassedPawnPush, rootImmediateMaterialLoss, quietTacticalThreatScore,
 } from './strategic-discipline.js';
 
 const INF = 1_000_000;
@@ -52,7 +52,10 @@ export class SearchEngine {
     const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 16)}`;
     const cached = this.evalCache.get(key);
     if (cached !== undefined) return cached;
-    const score = evaluate(position, perspective) + strategicPositionScore(position, perspective);
+    // Opening development/queen/castling discipline is deliberately root-only.
+    // Static search already evaluates development and king safety. Only the
+    // genuinely new endgame specialist knowledge belongs at every leaf.
+    const score = evaluate(position, perspective) + endgameStrategicScore(position, perspective);
     this.evalCache.set(key, score);
     if (this.evalCache.size > 40000) {
       let removed = 0;
@@ -267,11 +270,13 @@ export class SearchEngine {
 
     let priorOccurrences = 0;
     for (const hash of pathHashes) if (hash === position.hash) priorOccurrences++;
+    const inCheck = position.isInCheck();
     if (priorOccurrences >= 2) return this.repetitionUtility(position);
-    if (priorOccurrences >= 1) return this.cycleUtility(position);
+    // A second occurrence is not a terminal node. Only at the horizon do we
+    // prefer progress over another cycle, preserving full tactical search.
+    if (priorOccurrences >= 1 && depth <= 0 && !inCheck) return this.cycleUtility(position);
     if (position.halfmove >= 100) return 0;
 
-    const inCheck = position.isInCheck();
     if (inCheck && depth < 8) depth++;
 
     const key = `${position.hash.toString()}:${Math.min(position.halfmove, 100)}:${Math.min(position.fullmove, 16)}`;
@@ -305,12 +310,13 @@ export class SearchEngine {
       const quiet = !(move.flags & FLAGS.CAPTURE) && !move.promotion;
       const givesCheck = depth >= 3 && next.isInCheck();
       const endgameCritical = isEndgameCriticalMove(position, move);
+      const passerPush = isEndgamePassedPawnPush(position, move);
       let reduction = 0;
       if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !volatile && !endgameCritical) {
         reduction = depth >= 5 && i >= 9 ? 2 : 1;
       }
 
-      const endgameExtension = endgameCritical && typeOf(move.piece) === 'p' && depth <= 5 ? 1 : 0;
+      const endgameExtension = passerPush && depth <= 5 ? 1 : 0;
       const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0) + endgameExtension);
       const reducedDepth = Math.max(0, fullDepth - reduction);
       let childPv = [];
@@ -407,7 +413,9 @@ export class SearchEngine {
         const next = position.makeMove(move);
         const checkPriority = volatility >= 48 && next.isInCheck() ? 520 : 0;
         const threatPriority = quietTacticalThreatScore(position, move);
-        const endgamePriority = isEndgameCriticalMove(position, move) ? 330 : 0;
+        // Only concrete passed-pawn pushes enter qsearch. General king activity
+        // is positional and stays in evaluation/LMR protection.
+        const endgamePriority = isEndgamePassedPawnPush(position, move) ? 330 : 0;
         const priority = Math.max(checkPriority, threatPriority, endgamePriority);
         if (priority >= 300) tacticalQuiets.push({ move, priority });
       }
@@ -501,10 +509,12 @@ export class SearchEngine {
           : risk >= 300
             ? 35 + (risk - 300) * 0.08
             : 0;
+      // Legal SEE reports net exchange loss. Losing a minor to a pawn is about
+      // 220cp, so 180cp is already a serious root safety event.
       const materialPenalty = materialLoss >= 500
         ? 150 + (materialLoss - 500) * 0.22
-        : materialLoss >= 250
-          ? 55 + (materialLoss - 250) * 0.16
+        : materialLoss >= 180
+          ? 50 + (materialLoss - 180) * 0.18
           : 0;
       const composite = line.score + personality + deterministicNoise - riskPenalty - materialPenalty;
       return { ...line, personality, risk, materialLoss, composite };
@@ -512,10 +522,7 @@ export class SearchEngine {
 
     let pick = scored[0] || pool[0];
 
-    // A clean minor/rook/queen loss is a root veto when a strategically
-    // competitive safe alternative exists. Search can still choose a real
-    // sacrifice if it proves enough objective compensation to clear the gate.
-    if (pick?.materialLoss >= 250) {
+    if (pick?.materialLoss >= 180) {
       const safe = scored
         .filter(line => line.materialLoss < 120 && line.score >= bestScore - 110)
         .sort((a, b) => b.composite - a.composite)[0];
