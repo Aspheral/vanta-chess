@@ -21,7 +21,6 @@ const HOME = Object.freeze({
 const VALUABLE = new Set(['n', 'b', 'r', 'q']);
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
-function signed(color, perspective) { return color === perspective ? 1 : -1; }
 function pieceValue(piece) { return piece ? (PIECE_VALUES[typeOf(piece)] || 0) : 0; }
 function kingDistance(a, b) {
   const [ar, ac] = rowCol(a), [br, bc] = rowCol(b);
@@ -46,8 +45,7 @@ function isCastlingMove(move) {
 
 function isTacticalMove(position, move) {
   if (move.flags & FLAGS.CAPTURE || move.promotion) return true;
-  const next = position.makeMove(move);
-  return next.isInCheck();
+  return position.makeMove(move).isInCheck();
 }
 
 function attacksSquareFrom(position, from, target) {
@@ -152,9 +150,7 @@ function endgameSideValue(position, color) {
   const enemyKing = position.kingSquare(enemy);
   let score = 0;
 
-  if (king >= 0) {
-    score += Math.max(0, 4 - centerDistance(king)) * 10 * phase;
-  }
+  if (king >= 0) score += Math.max(0, 4 - centerDistance(king)) * 10 * phase;
 
   for (let sq = 0; sq < 64; sq++) {
     const piece = position.board[sq];
@@ -184,30 +180,13 @@ function endgameSideValue(position, color) {
   return score;
 }
 
-function openingDisciplineSide(position, color) {
-  if (position.fullmove > 14) return 0;
-  const home = HOME[color];
-  const homeMinors = homeMinorCount(position, color);
-  const queenPiece = color === WHITE ? 'Q' : 'q';
-  const king = position.kingSquare(color);
-  let score = 0;
-
-  if (position.board[home.queen] !== queenPiece && position.board.includes(queenPiece) && homeMinors >= 2) {
-    score -= 8 + homeMinors * 5;
-  }
-  if (home.castleSquares.includes(king)) score += 18;
-  else if (king === home.king && hasCastlingRight(position, color) && position.fullmove >= 8) {
-    score -= Math.min(26, (position.fullmove - 7) * 4);
-  } else if (king !== home.king && !home.castleSquares.includes(king) && position.fullmove <= 12) {
-    score -= 18;
-  }
-  return score;
-}
-
 export function strategicPositionValue(position, perspective = position.turn) {
-  const opening = openingDisciplineSide(position, perspective) - openingDisciplineSide(position, opposite(perspective));
+  // Opening discipline stays root-only. Injecting it into every leaf made the
+  // same concept count repeatedly and disturbed already-proven tactical lines.
+  // The endgame layer is genuinely positional and therefore belongs in static
+  // evaluation once material has thinned out.
   const endgame = endgameSideValue(position, perspective) - endgameSideValue(position, opposite(perspective));
-  return Math.round(opening + endgame);
+  return Math.round(endgame);
 }
 
 export function rootStrategicAdjustment(position, move) {
@@ -255,19 +234,28 @@ export function rootStrategicAdjustment(position, move) {
 export function immediateMaterialLossRisk(position, move) {
   if (!move) return 100000;
   const after = position.makeMove(move);
-  let bestGain = 0;
-  let victim = 0;
-  for (const capture of after.legalMoves({ capturesOnly: true })) {
-    if (!(capture.flags & FLAGS.CAPTURE)) continue;
-    const gain = staticExchangeEval(after, capture);
-    const capturedValue = pieceValue(capture.captured);
-    if (gain > bestGain) {
-      bestGain = gain;
-      victim = capturedValue;
+  const us = position.turn;
+  const them = opposite(us);
+  let risk = 0;
+
+  // Only call it an immediate-loss error when the candidate leaves one of our
+  // already-attacked valuable pieces sitting on the same square and the enemy
+  // can profitably take it. This prevents an unrelated tactical capture
+  // elsewhere on the board from falsely marking every candidate as unsafe.
+  for (let sq = 0; sq < 64; sq++) {
+    const piece = position.board[sq];
+    if (!piece || colorOf(piece) !== us || !VALUABLE.has(typeOf(piece))) continue;
+    if (!position.isSquareAttacked(sq, them) || after.board[sq] !== piece) continue;
+
+    for (const capture of after.legalMoves({ capturesOnly: true })) {
+      if (capture.to !== sq || !(capture.flags & FLAGS.CAPTURE)) continue;
+      const gain = staticExchangeEval(after, capture);
+      const victim = pieceValue(capture.captured);
+      if (gain < 220 || victim < 300) continue;
+      risk = Math.max(risk, 620 + Math.min(360, Math.max(gain, victim) - 220));
     }
   }
-  if (bestGain < 220 || victim < 300) return 0;
-  return 560 + Math.min(420, Math.max(bestGain, victim) - 220);
+  return risk;
 }
 
 export function rootSafetyRisk(position, move) {
