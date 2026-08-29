@@ -1,9 +1,10 @@
 import { FLAGS, moveToUci } from '../chess/position.js';
 import { colorOf, typeOf, opposite } from '../chess/constants.js';
-import { staticExchangeEval } from './tactics.js';
+import { rootTacticalRisk, staticExchangeEval } from './tactics.js';
 
 const PROTECTED_TYPES = new Set(['n', 'b', 'r', 'q']);
 export const AVOIDABLE_LOSS_FLOOR = 110;
+export const SEVERE_ROOT_RISK_FLOOR = 600;
 
 /**
  * Measure the net material Vanta leaves on the table when it plays a move but
@@ -64,15 +65,24 @@ export function ignoredAttackedPieceLoss(position, move, seeMemo = new Map()) {
 }
 
 /**
- * Exclude only clearly avoidable "ignore the attacked piece" moves at root.
- * If every available move trips the rule, return no automatic exclusions and
- * let normal search solve the forced position. This keeps the guard from
- * inventing legality when material loss cannot actually be avoided.
+ * Exclude only clearly avoidable root blunders. Two independent detectors feed
+ * this gate:
+ *
+ *  1. net SEE loss from ignoring a piece that was already attacked; and
+ *  2. the engine's existing severe root tactical-risk detector, which catches
+ *     multi-piece fork/triage failures such as the old 6...Nxe5 position.
+ *
+ * The second detector is intentionally restricted to quiet moves and a high
+ * 600-point risk floor. Checks still go to ordinary search, so a forcing
+ * sacrifice cannot be mechanically rejected just because its surface material
+ * picture is scary. If every legal move trips the rule, return no automatic
+ * exclusions and let normal search solve the forced position.
  */
 export function practicalSafetyExclusions(position, options = {}) {
   if (position.isInCheck()) return [];
 
-  const floor = Math.max(80, Number(options.lossFloor) || AVOIDABLE_LOSS_FLOOR);
+  const lossFloor = Math.max(80, Number(options.lossFloor) || AVOIDABLE_LOSS_FLOOR);
+  const riskFloor = Math.max(400, Number(options.riskFloor) || SEVERE_ROOT_RISK_FLOOR);
   const preExcluded = new Set(options.excludeMoves || []);
   const legal = position.legalMoves().filter(move => !preExcluded.has(moveToUci(move)));
   if (legal.length <= 1) return [];
@@ -82,9 +92,15 @@ export function practicalSafetyExclusions(position, options = {}) {
   let safeCount = 0;
 
   for (const move of legal) {
+    const after = position.makeMove(move);
+    const givesCheck = after.isInCheck();
     const loss = ignoredAttackedPieceLoss(position, move, seeMemo);
-    if (loss >= floor) unsafe.push({ uci: moveToUci(move), loss });
-    else safeCount++;
+    const risk = givesCheck ? 0 : rootTacticalRisk(position, move, seeMemo);
+    if (loss >= lossFloor || risk >= riskFloor) {
+      unsafe.push({ uci: moveToUci(move), loss, risk });
+    } else {
+      safeCount++;
+    }
   }
 
   if (!safeCount) return [];
@@ -94,7 +110,7 @@ export function practicalSafetyExclusions(position, options = {}) {
 /**
  * Search through the same SearchEngine, but remove avoidable root blunders
  * before iterative deepening. This is deliberately a root policy, not a leaf
- * evaluation term: deeper tactical sacrifices remain completely available.
+ * evaluation term: deeper speculative sacrifices remain completely available.
  */
 export function searchWithPracticalSafety(engine, position, options = {}) {
   const automatic = practicalSafetyExclusions(position, options);
