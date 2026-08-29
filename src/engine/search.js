@@ -1,17 +1,14 @@
 import { SearchEngine as CoreSearchEngine } from './search-core.js';
-import { FLAGS, moveToUci } from '../chess/position.js';
-import {
-  rootStrategicAdjustment, rootSafetyRisk, isForcingQuietThreat,
-} from './quality.js';
+import { rootStrategicAdjustment, rootSafetyRisk } from './quality.js';
 
 export class SearchEngine extends CoreSearchEngine {
   searchRoot(position, depth, options = {}) {
     const result = super.searchRoot(position, depth, options);
     if (!result.lines?.length) return result;
 
-    // Annotate the root for diagnostics, but do not rewrite objective scores or
-    // the proven personality term. Strategic discipline is applied only after
-    // the core engine has made its normal tactical/objective choice.
+    // Annotate the root for diagnostics, but do not rewrite objective scores,
+    // move ordering, qsearch, or the proven personality term. The existing
+    // tactical engine gets exactly the same search tree it had before this pass.
     for (const line of result.lines) line.quality = rootStrategicAdjustment(position, line.move);
     return result;
   }
@@ -25,16 +22,17 @@ export class SearchEngine extends CoreSearchEngine {
     const bestScore = Math.max(...pool.map(line => line.score));
     const selectedRisk = rootSafetyRisk(position, selected.move);
 
-    // Material/tactical safety comes first. A cleanly hanging minor or major is
-    // not a style preference. If a competitive safe line exists, use it. Sound
-    // sacrifices survive when search proves enough compensation or no safe
-    // alternative exists inside a generous but still finite objective margin.
+    // A cleanly hanging/trapped minor or major is a safety failure, not a style
+    // preference. Permit a wide rescue window because a shallow evaluation can
+    // easily be wrong by roughly the value of the piece it is about to lose.
+    // A genuinely sound sacrifice still survives if no competitive safe line
+    // exists or if search values the sacrifice more than that material margin.
     if (selectedRisk >= 560) {
-      const margin = selectedRisk >= 820 ? 210 : 155;
+      const margin = selectedRisk >= 820 ? 340 : 290;
       const alternatives = pool
         .filter(line => line.score >= bestScore - margin)
         .map(line => ({ ...line, safetyRisk: rootSafetyRisk(position, line.move) }))
-        .filter(line => line.safetyRisk < 500)
+        .filter(line => line.safetyRisk < 280)
         .sort((a, b) => (b.score + (b.personality || 0) * 0.35) - (a.score + (a.personality || 0) * 0.35));
 
       if (alternatives.length) {
@@ -50,12 +48,16 @@ export class SearchEngine extends CoreSearchEngine {
       return { ...selected, risk: Math.max(selected.risk || 0, selectedRisk) };
     }
 
-    // Only after the normal move is tactically sound do the new opening/endgame
-    // preferences get a vote. They may break near-ties, never overturn a real
-    // search advantage. This keeps Vanta's established tactical personality
-    // authoritative while discouraging knight tourism, queen wandering, and
-    // passive endgame shuffling.
-    const strategicWindow = Math.min(42, Math.max(24, this.config.selectionWindow ?? 32));
+    // Medium tactical risk was already considered by the core seatbelt. Never
+    // let an opening/endgame style preference reopen such a move afterwards.
+    if (selectedRisk >= 280) {
+      return { ...selected, risk: Math.max(selected.risk || 0, selectedRisk) };
+    }
+
+    // Strategy only breaks objectively close, genuinely safe ties. This is the
+    // lane for development economy, queen discipline, castling, and endgame
+    // progress. It cannot overrule a tactical warning.
+    const strategicWindow = Math.min(38, Math.max(22, this.config.selectionWindow ?? 32));
     const candidates = pool
       .filter(line => line.score >= bestScore - strategicWindow)
       .map(line => ({
@@ -63,12 +65,12 @@ export class SearchEngine extends CoreSearchEngine {
         safetyRisk: rootSafetyRisk(position, line.move),
         quality: line.quality ?? rootStrategicAdjustment(position, line.move),
       }))
-      .filter(line => line.safetyRisk < 500)
+      .filter(line => line.safetyRisk < 280)
       .map(line => ({ ...line, strategicComposite: line.score + (line.personality || 0) + line.quality }))
       .sort((a, b) => b.strategicComposite - a.strategicComposite);
 
     const strategic = candidates[0];
-    if (strategic && strategic.strategicComposite > (selected.score ?? selected.objectiveScore ?? -Infinity) + 4) {
+    if (strategic && strategic.strategicComposite > (selected.score ?? selected.objectiveScore ?? -Infinity) + 6) {
       return {
         move: strategic.move,
         score: strategic.strategicComposite,
@@ -79,17 +81,5 @@ export class SearchEngine extends CoreSearchEngine {
     }
 
     return { ...selected, risk: Math.max(selected.risk || 0, selectedRisk) };
-  }
-
-  orderMoves(position, moves, ply, ttMove) {
-    const ordered = super.orderMoves(position, moves, ply, ttMove);
-    if (ply > 1 || ordered.length < 2) return ordered;
-    const rank = new Map(ordered.map((move, index) => [moveToUci(move), index]));
-    return [...ordered].sort((a, b) => {
-      const at = !(a.flags & FLAGS.CAPTURE) && !a.promotion && isForcingQuietThreat(position, a) ? 1 : 0;
-      const bt = !(b.flags & FLAGS.CAPTURE) && !b.promotion && isForcingQuietThreat(position, b) ? 1 : 0;
-      if (at !== bt) return bt - at;
-      return (rank.get(moveToUci(a)) ?? 999) - (rank.get(moveToUci(b)) ?? 999);
-    });
   }
 }
