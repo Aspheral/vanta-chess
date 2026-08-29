@@ -181,9 +181,6 @@ function endgameSideValue(position, color) {
 }
 
 export function strategicPositionValue(position, perspective = position.turn) {
-  // Opening discipline stays root-only. Injecting it into every leaf made the
-  // same concept count repeatedly and disturbed already-proven tactical lines.
-  // The endgame value is exposed for root progress comparisons and tests.
   const endgame = endgameSideValue(position, perspective) - endgameSideValue(position, opposite(perspective));
   return Math.round(endgame);
 }
@@ -237,10 +234,6 @@ export function immediateMaterialLossRisk(position, move) {
   const them = opposite(us);
   let risk = 0;
 
-  // Only call it an immediate-loss error when the candidate leaves one of our
-  // already-attacked valuable pieces sitting on the same square and the enemy
-  // can profitably take it. This prevents an unrelated tactical capture
-  // elsewhere from falsely marking every candidate as unsafe.
   for (let sq = 0; sq < 64; sq++) {
     const piece = position.board[sq];
     if (!piece || colorOf(piece) !== us || !VALUABLE.has(typeOf(piece))) continue;
@@ -267,8 +260,6 @@ function bestCaptureGainAt(position, square) {
 }
 
 function threatCanBeNeutralized(position, attackerSquare) {
-  // If the newly advanced/forking piece can simply be removed, there is no
-  // trap. Legal SEE handles pins and x-rays rather than guessing geometrically.
   for (const capture of position.legalMoves({ capturesOnly: true })) {
     if (capture.to !== attackerSquare || !(capture.flags & FLAGS.CAPTURE)) continue;
     if (staticExchangeEval(position, capture) >= -40) return true;
@@ -284,28 +275,23 @@ function valuablePieceHasSafeEscape(position, square) {
     if (escape.from !== square) continue;
     const next = position.makeMove(escape);
     const recaptureGain = bestCaptureGainAt(next, escape.to);
-    // A move that cannot be profitably met by taking the escaping piece is a
-    // real exit. For a rook/queen demand a correspondingly larger clean gain.
     const losingThreshold = Math.min(420, Math.max(180, value - 100));
     if (!Number.isFinite(recaptureGain) || recaptureGain < losingThreshold) return true;
   }
   return false;
 }
 
-function quietTrapRisk(position, move) {
+export function quietTrapRisk(position, move) {
   const after = position.makeMove(move);
   const us = position.turn;
   const them = opposite(us);
   let risk = 0;
 
-  // This is root-only and only examines opponent quiet threats. It catches the
-  // move *before* a piece is doomed, e.g. 5.f4? ...b5 trapping Na4, rather than
-  // blaming the next move when every knight retreat already loses material.
   for (const reply of after.legalMoves()) {
     if (reply.flags & FLAGS.CAPTURE || reply.promotion) continue;
     if (!isForcingQuietThreat(after, reply)) continue;
     const afterReply = after.makeMove(reply);
-    if (afterReply.isInCheck()) continue; // checks are already handled by core search
+    if (afterReply.isInCheck()) continue;
     if (threatCanBeNeutralized(afterReply, reply.to)) continue;
 
     for (let sq = 0; sq < 64; sq++) {
@@ -320,8 +306,12 @@ function quietTrapRisk(position, move) {
   return risk;
 }
 
+export function avoidableMaterialRisk(position, move) {
+  return Math.max(immediateMaterialLossRisk(position, move), quietTrapRisk(position, move));
+}
+
 export function rootSafetyRisk(position, move) {
-  return Math.max(rootTacticalRisk(position, move), immediateMaterialLossRisk(position, move), quietTrapRisk(position, move));
+  return Math.max(rootTacticalRisk(position, move), avoidableMaterialRisk(position, move));
 }
 
 export function isForcingQuietThreat(position, move) {
