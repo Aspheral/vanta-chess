@@ -2,6 +2,8 @@ import { PIECE_VALUES, colorOf, typeOf, opposite } from '../chess/constants.js';
 import { FLAGS } from '../chess/position.js';
 import { staticExchangeEval } from './tactics.js';
 
+const promotionCache = new Map();
+
 function materialBalance(position, color) {
   let score = 0;
   for (const piece of position.board) {
@@ -10,6 +12,15 @@ function materialBalance(position, color) {
     score += colorOf(piece) === color ? value : -value;
   }
   return score;
+}
+
+function hasImmediatePromotion(position) {
+  const key = position.hash.toString();
+  if (promotionCache.has(key)) return promotionCache.get(key);
+  const result = position.legalMoves().some(move => Boolean(move.promotion));
+  promotionCache.set(key, result);
+  if (promotionCache.size > 512) promotionCache.delete(promotionCache.keys().next().value);
+  return result;
 }
 
 /**
@@ -39,9 +50,9 @@ export function speculativeSacrificeRisk(position, move, seeMemo = new Map()) {
 /**
  * A narrow root safety gate for the practical failure seen repeatedly in the
  * Chess.com sample: a piece is already attacked, Vanta plays somewhere else,
- * and the opponent simply takes it. It also carries the separate "don't throw
- * more material while already behind" exchange warning so callers only need a
- * single practical root-safety signal.
+ * and the opponent simply takes it. It also carries material-deficit sacrifice
+ * and immediate-promotion warnings so personality cannot talk Vanta out of an
+ * obviously urgent conversion.
  */
 export function hangingPieceEmergencyRisk(position, move, seeMemo = new Map()) {
   if (!move) return 100000;
@@ -51,8 +62,11 @@ export function hangingPieceEmergencyRisk(position, move, seeMemo = new Map()) {
   const sacrificeRisk = speculativeSacrificeRisk(position, move, seeMemo);
   if (after.isInCheck()) return sacrificeRisk;
 
+  let risk = sacrificeRisk;
+  if (!move.promotion && hasImmediatePromotion(position)) risk = Math.max(risk, 900);
+
   const captures = after.legalMoves({ capturesOnly: true });
-  let risk = 0;
+  let hangingRisk = 0;
 
   for (let sq = 0; sq < 64; sq++) {
     const piece = position.board[sq];
@@ -69,8 +83,8 @@ export function hangingPieceEmergencyRisk(position, move, seeMemo = new Map()) {
 
     const victim = PIECE_VALUES[typeOf(piece)] || 0;
     const base = victim >= PIECE_VALUES.r ? 1100 : 950;
-    risk += base + Math.min(300, Math.max(0, bestGain - 160));
+    hangingRisk += base + Math.min(300, Math.max(0, bestGain - 160));
   }
 
-  return Math.max(sacrificeRisk, Math.min(2200, Math.round(risk)));
+  return Math.max(risk, Math.min(2200, Math.round(hangingRisk)));
 }
