@@ -74,7 +74,8 @@ test('the DevTheExpertBack knight hang is a hard material-safety failure and is 
   const p=Position.fromFEN(fenBeforePly(replay,11)); // before 6.c3, Na4 is attacked by b5
   const c3=p.moveFromUci('c2c3');
   assert.ok(c3);
-  assert.ok(rootImmediateMaterialLoss(p,c3)>=300,`loss ${rootImmediateMaterialLoss(p,c3)}`);
+  // Legal SEE is net exchange value: knight (320) lost to pawn (100) is ~220.
+  assert.ok(rootImmediateMaterialLoss(p,c3)>=200,`loss ${rootImmediateMaterialLoss(p,c3)}`);
   const r=engine(900,3).search(p,{moveTimeMs:900,maxDepth:3});
   assert.notEqual(moveToUci(r.move),'c2c3',JSON.stringify(r.candidates));
 });
@@ -84,7 +85,7 @@ test('a pawn grab cannot outrank saving the attacked Nb5 in the a6 game',()=>{
   const p=Position.fromFEN(fenBeforePly(replay,17)); // before 9.Qxg7, Nb5 is attacked by a6
   const grab=p.moveFromUci('a1g7');
   assert.ok(grab);
-  assert.ok(rootImmediateMaterialLoss(p,grab)>=300,`loss ${rootImmediateMaterialLoss(p,grab)}`);
+  assert.ok(rootImmediateMaterialLoss(p,grab)>=200,`loss ${rootImmediateMaterialLoss(p,grab)}`);
   const r=engine(950,3).search(p,{moveTimeMs:950,maxDepth:3});
   assert.notEqual(moveToUci(r.move),'a1g7',JSON.stringify(r.candidates));
 });
