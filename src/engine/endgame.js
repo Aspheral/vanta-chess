@@ -66,8 +66,8 @@ function materialProfile(position) {
 /**
  * Fade the specialist in only after substantial material has disappeared.
  * Sparse positions that still contain queens remain king-safety positions,
- * not "king centralization" endgames. The few-piece floors therefore apply
- * only after every queen is gone.
+ * not king-centralization endgames. The few-piece floors therefore apply only
+ * after every queen is gone.
  */
 export function endgamePhase(position) {
   const profile = materialProfile(position);
@@ -100,6 +100,26 @@ function kingActivityFor(position, color) {
   const [row] = rowCol(king);
   const penetration = color === WHITE ? Math.max(0, 4 - row) : Math.max(0, row - 3);
   return kingCentrality(king) * 13 + penetration * 4;
+}
+
+/**
+ * In pawn endings, king activity does not mean abandoning every pawn around the
+ * king. Pawns physically supported by the king form a mobile unit and should
+ * not be scored worse merely because raw pawn-advance activity likes them three
+ * squares farther up the board.
+ */
+function kingPawnCohesionFor(position, color) {
+  const king = position.kingSquare(color);
+  if (king < 0) return 0;
+  let score = 0;
+  for (let sq = 0; sq < 64; sq++) {
+    const piece = position.board[sq];
+    if (!piece || colorOf(piece) !== color || typeOf(piece) !== 'p') continue;
+    const distance = chebyshev(king, sq);
+    if (distance === 1) score += 9;
+    else if (distance === 2) score += 3;
+  }
+  return score;
 }
 
 function rooksBehindPasser(position, color, pawnSquare) {
@@ -171,22 +191,28 @@ function directOpposition(position) {
 export function endgameBreakdown(position, perspective = position.turn) {
   const phase = endgamePhase(position);
   if (!phase.active) {
-    return { active: false, weight: phase.weight, kingActivity: 0, passers: 0, opposition: 0, total: 0 };
+    return { active: false, weight: phase.weight, kingActivity: 0, passers: 0, cohesion: 0, opposition: 0, total: 0 };
   }
 
   const kingWhite = kingActivityFor(position, WHITE);
   const kingBlack = kingActivityFor(position, BLACK);
+  const cohesionWhite = kingPawnCohesionFor(position, WHITE);
+  const cohesionBlack = kingPawnCohesionFor(position, BLACK);
   const passerWhite = passerValueFor(position, WHITE);
   const passerBlack = passerValueFor(position, BLACK);
   const oppositionWhite = phase.nonPawnMaterial === 0 ? directOpposition(position) : 0;
 
-  const rawWhite = (kingWhite - kingBlack) + (passerWhite - passerBlack) + oppositionWhite;
+  const rawWhite = (kingWhite - kingBlack)
+    + (cohesionWhite - cohesionBlack)
+    + (passerWhite - passerBlack)
+    + oppositionWhite;
   const whiteScore = Math.round(rawWhite * phase.weight);
   const total = perspective === WHITE ? whiteScore : -whiteScore;
   return {
     active: true,
     weight: phase.weight,
     kingActivity: Math.round((perspective === WHITE ? kingWhite - kingBlack : kingBlack - kingWhite) * phase.weight),
+    cohesion: Math.round((perspective === WHITE ? cohesionWhite - cohesionBlack : cohesionBlack - cohesionWhite) * phase.weight),
     passers: Math.round((perspective === WHITE ? passerWhite - passerBlack : passerBlack - passerWhite) * phase.weight),
     opposition: Math.round((perspective === WHITE ? oppositionWhite : -oppositionWhite) * phase.weight),
     total,
