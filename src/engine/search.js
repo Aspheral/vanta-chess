@@ -6,6 +6,9 @@ import {
   staticExchangeEval, rootTacticalRisk, cheapVolatility, positionCriticality,
   hasNearPromotion, allocateRapidTime,
 } from './tactics.js';
+import {
+  strategicEvaluation, strategicMoveBonus, quietThreatScore,
+} from './strategy.js';
 
 const INF = 1_000_000;
 const MATE_TT_BOUND = MATE_SCORE - 1000;
@@ -48,7 +51,11 @@ export class SearchEngine {
     const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 15)}`;
     const cached = this.evalCache.get(key);
     if (cached !== undefined) return cached;
-    const score = evaluate(position, perspective);
+    // Keep the validated opening/middlegame evaluator untouched. The extra
+    // endgame model activates only once a real game can plausibly have
+    // simplified, avoiding a tax on every early search leaf.
+    const endgame = position.fullmove >= 14 ? strategicEvaluation(position, perspective) : 0;
+    const score = evaluate(position, perspective) + endgame;
     this.evalCache.set(key, score);
     if (this.evalCache.size > 40000) {
       let removed = 0;
@@ -225,7 +232,7 @@ export class SearchEngine {
         move,
         score,
         pv: [move, ...pv],
-        personality: personalityMoveBonus(position, move),
+        personality: personalityMoveBonus(position, move) + strategicMoveBonus(position, move),
         exact,
       };
       lines.push(line);
@@ -291,8 +298,6 @@ export class SearchEngine {
     let bestScore = -INF;
     let bestMove = null;
     let bestPv = [];
-    // Tactical classification is only needed at depths where LMR can occur.
-    // Avoid paying for full board scans at shallow nodes.
     const volatile = depth >= 3 && (cheapVolatility(position) >= 52 || hasNearPromotion(position));
 
     for (let i = 0; i < moves.length; i++) {
@@ -392,9 +397,9 @@ export class SearchEngine {
 
     if (qply > 8 || ply > 18 || this.timeUp()) return inCheck ? alpha : Math.max(alpha, stand);
 
-    // Quiet checks are useful in volatile horizon nodes, but searching them at
-    // every q-node was a large speed regression. Captures and all promotions
-    // remain present unconditionally.
+    // Keep the proven qsearch shape. Only quiet checks enter the first horizon
+    // when the position is already volatile; broader quiet-threat recognition
+    // is deliberately root-scoped so it cannot erase a ply of calculation.
     if (!inCheck && qply === 0 && cheapVolatility(position) >= 48) {
       const existing = new Set(moves.map(moveToUci));
       for (const move of position.legalMoves()) {
@@ -411,8 +416,6 @@ export class SearchEngine {
       const givesCheck = next.isInCheck();
       if (!inCheck && (move.flags & FLAGS.CAPTURE) && !move.promotion && !givesCheck) {
         const victim = PIECE_VALUES[typeOf(move.captured)] || 0;
-        // Full legal SEE is authoritative in qsearch, where pruning an exchange
-        // incorrectly is dangerous and the candidate set is already tactical.
         const see = staticExchangeEval(position, move, this.seeMemo);
         if (see < -120) continue;
         if (stand + Math.max(victim, see) + 95 < alpha) continue;
@@ -435,15 +438,16 @@ export class SearchEngine {
         const victim = PIECE_VALUES[typeOf(move.captured)] || 0;
         const attacker = PIECE_VALUES[typeOf(move.piece)] || 0;
         score += 80_000 + victim * 12 - attacker;
-        // Legal SEE is deliberately selective here. Root ordering benefits from
-        // exact exchange information; doing it at every interior node erased a
-        // full ply of practical depth.
         if (ply === 0) {
           const see = staticExchangeEval(position, move, this.seeMemo);
           score += Math.max(-12000, Math.min(30000, see * 30));
         }
       }
       if (ply <= 1 && !(move.flags & FLAGS.CAPTURE) && !move.promotion && position.makeMove(move).isInCheck()) score += 62_000;
+      if (ply === 0 && !(move.flags & FLAGS.CAPTURE) && !move.promotion) {
+        const threat = quietThreatScore(position, move);
+        if (threat >= 58) score += threat * 220;
+      }
       if (killers[0] === u) score += 18_000;
       else if (killers[1] === u) score += 14_000;
       score += Math.min(30000, this.history.get(u) || 0);
@@ -482,9 +486,6 @@ export class SearchEngine {
         : 0;
       const personality = danger >= 62 ? 0 : (line.personality || 0);
       const risk = rootTacticalRisk(position, line.move, this.seeMemo);
-      // Root risk is a veto/verification signal, not a second evaluation
-      // function. Keep it strong for mate/rook/queen loss but modest for a
-      // potentially sound minor-piece sacrifice that normal search likes.
       const riskPenalty = risk >= MATE_RISK
         ? 1_000_000
         : risk >= 700
@@ -498,17 +499,19 @@ export class SearchEngine {
 
     let pick = scored[0] || pool[0];
 
-    // A short forced rook/queen loss can widen the normal personality window;
-    // smaller tactical concessions remain search-authoritative so sacrifices
-    // are not mechanically banned.
-    if (pick?.risk >= 500) {
-      const rescuePool = pool.filter(line => line.score >= bestScore - 120).map(line => ({
+    // Clean minor-piece losses get a practical rescue window as well as the
+    // existing rook/queen guard. Search may still play a real sacrifice when
+    // no competitive safe alternative exists.
+    if (pick?.risk >= 260) {
+      const rescueWindow = pick.risk >= 500 ? 120 : 90;
+      const requiredImprovement = pick.risk >= 500 ? 220 : 140;
+      const rescuePool = pool.filter(line => line.score >= bestScore - rescueWindow).map(line => ({
         ...line,
         risk: rootTacticalRisk(position, line.move, this.seeMemo),
       }));
       const safer = rescuePool
-        .filter(line => line.risk + 220 < pick.risk)
-        .sort((a, b) => (b.score - b.risk * 0.18) - (a.score - a.risk * 0.18))[0];
+        .filter(line => line.risk + requiredImprovement < pick.risk)
+        .sort((a, b) => (b.score - b.risk * 0.22) - (a.score - a.risk * 0.22))[0];
       if (safer) pick = { ...safer, composite: safer.score };
     }
 
