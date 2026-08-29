@@ -64,21 +64,21 @@ function materialProfile(position) {
 }
 
 /**
- * The specialist fades in only after substantial material has disappeared.
- * A normal queenless middlegame with four rooks and four minors is not treated
- * as an endgame. This keeps the feature surgical and avoids reweighting opening
- * or middlegame positions that the existing evaluator already handles well.
+ * Fade the specialist in only after substantial material has disappeared.
+ * Sparse positions that still contain queens remain king-safety positions,
+ * not "king centralization" endgames. The few-piece floors therefore apply
+ * only after every queen is gone.
  */
 export function endgamePhase(position) {
   const profile = materialProfile(position);
   let weight;
   if (profile.queens === 0) {
     weight = clamp((4000 - profile.nonPawnMaterial) / 2600, 0, 1);
+    if (profile.rooks + profile.minors <= 4) weight = Math.max(weight, 0.68);
+    if (profile.rooks + profile.minors <= 2) weight = Math.max(weight, 0.88);
   } else {
     weight = clamp((2350 - profile.nonPawnMaterial) / 1650, 0, 1);
   }
-  if (profile.rooks + profile.minors <= 4) weight = Math.max(weight, 0.68);
-  if (profile.rooks + profile.minors <= 2) weight = Math.max(weight, 0.88);
   return {
     ...profile,
     weight: Number(weight.toFixed(3)),
@@ -165,8 +165,6 @@ function directOpposition(position) {
   const [wr, wc] = rowCol(wk), [br, bc] = rowCol(bk);
   const direct = (wr === br && Math.abs(wc - bc) === 2) || (wc === bc && Math.abs(wr - br) === 2);
   if (!direct) return 0;
-  // In direct opposition the side not to move owns the opposition. Keep this
-  // intentionally small because pawn structure decides whether it actually matters.
   return position.turn === WHITE ? -16 : 16;
 }
 
@@ -234,12 +232,6 @@ function kingApproachesAdvancedPasser(position, move) {
   return after < before;
 }
 
-/**
- * Search policy for specialist endgames. Important king moves and passers are
- * protected from late-move reductions, while only genuinely urgent passed-pawn
- * pushes/blockades receive an extra ply. This improves pawn-race horizons
- * without turning every queenless position into an exponential search bomb.
- */
 export function endgameSearchMove(position, move) {
   const phase = endgamePhase(position);
   if (!phase.active || !move) {
