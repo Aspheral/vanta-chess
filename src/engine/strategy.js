@@ -273,23 +273,12 @@ function castlingRightsRemain(position, color) {
   return [...HOME[color].rights].some(right => position.castling.includes(right));
 }
 
-function quietTrapForecast(position, defenderColor) {
-  const before = trappedPiecePenalty(position, defenderColor);
-  let worstIncrease = 0;
-  for (const threat of position.legalMoves()) {
-    if ((threat.flags & FLAGS.CAPTURE) || threat.promotion) continue;
-    if (quietThreatScore(position, threat) < 58) continue;
-    const after = position.makeMove(threat);
-    worstIncrease = Math.max(worstIncrease, trappedPiecePenalty(after, defenderColor) - before);
-  }
-  return Math.max(0, worstIncrease);
-}
-
 /**
- * Root style discipline learned from the August game batch. It does not ban
- * tactics. Concrete captures/checks/promotions remain search-authoritative,
- * while repeated minor moves, queen tourism, voluntary king exposure and
- * walk-into-a-cage plans must pay a real opportunity cost.
+ * Root style discipline learned from the August game batch. It stays cheap on
+ * purpose: no legal-move scans or nested mini-searches are performed here.
+ * Concrete tactics remain search-authoritative, while repeated minor moves,
+ * queen tourism, voluntary king exposure and directly-created piece cages pay
+ * a real opportunity cost.
  */
 export function strategicMoveBonus(position, move) {
   if (!move) return 0;
@@ -320,20 +309,15 @@ export function strategicMoveBonus(position, move) {
     } else if (type === 'k' && move.from === home.king && castlingRightsRemain(position, us) && !tactical) {
       bonus -= 46;
     }
-  }
 
-  const trapBefore = trappedPiecePenalty(position, us);
-  const trapAfter = trappedPiecePenalty(next, us);
-  if (trapAfter > trapBefore && !tactical) bonus -= Math.min(70, Math.round((trapAfter - trapBefore) * 0.45));
-  if (!tactical) {
-    const forecast = quietTrapForecast(next, us);
-    if (forecast > 0) bonus -= Math.min(72, Math.round(forecast * 0.38));
+    if (!tactical) {
+      const trapBefore = trappedPiecePenalty(position, us);
+      const trapAfter = trappedPiecePenalty(next, us);
+      if (trapAfter > trapBefore) bonus -= Math.min(70, Math.round((trapAfter - trapBefore) * 0.45));
+    }
   }
 
   if (isEndgame(position)) {
-    const before = strategicEvaluation(position, us);
-    const after = strategicEvaluation(next, us);
-    bonus += clamp(Math.round((after - before) * 0.7), -24, 30);
     if (type === 'k') bonus += clamp(kingCentralization(next, us) - kingCentralization(position, us), -8, 10);
     if (type === 'p' && isPassedPawn(next, move.to, us)) {
       const progress = pawnProgress(move.to, us);
@@ -341,13 +325,13 @@ export function strategicMoveBonus(position, move) {
     }
   }
 
-  return Math.round(clamp(bonus, -110, 70));
+  return Math.round(clamp(bonus, -100, 70));
 }
 
 /**
  * Score a nominally quiet move by the immediate threat it creates. This makes
- * f3-style forks, pawn attacks on loose pieces and advanced passer pushes part
- * of the tactical horizon instead of invisible "quiet" moves.
+ * f3-style forks, pawn attacks on loose pieces and advanced passer pushes
+ * available to root ordering without expanding quiescence into a second tree.
  */
 export function quietThreatScore(position, move) {
   if (!move || (move.flags & FLAGS.CAPTURE) || move.promotion) return 0;
