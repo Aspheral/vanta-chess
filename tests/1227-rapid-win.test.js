@@ -15,7 +15,7 @@ const PGN=readFileSync(join(here,'fixtures','vanta-vs-1227-rapid.pgn'),'utf8');
 const replay=replayPgn(PGN);
 
 function engine(ms=1100,depth=4,extra={}) {
-  return new SearchEngine({maxDepth:depth,moveTimeMs:ms,nodeLimit:320000,selectionWindow:32,evalNoise:0,...extra});
+  return new SearchEngine({maxDepth:depth,moveTimeMs:ms,nodeLimit:320000,selectionWindow:20,evalNoise:0,...extra});
 }
 
 test('1227 rapid win replays exactly to mate',()=>{
