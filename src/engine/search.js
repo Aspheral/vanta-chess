@@ -1,28 +1,18 @@
 import { SearchEngine as CoreSearchEngine } from './search-core.js';
 import { FLAGS, moveToUci } from '../chess/position.js';
 import {
-  strategicPositionValue, rootStrategicAdjustment, rootSafetyRisk,
-  isForcingQuietThreat,
+  rootStrategicAdjustment, rootSafetyRisk, isForcingQuietThreat,
 } from './quality.js';
 
 export class SearchEngine extends CoreSearchEngine {
-  staticEval(position, perspective = position.turn) {
-    return super.staticEval(position, perspective) + strategicPositionValue(position, perspective);
-  }
-
   searchRoot(position, depth, options = {}) {
     const result = super.searchRoot(position, depth, options);
     if (!result.lines?.length) return result;
 
-    for (const line of result.lines) {
-      const quality = rootStrategicAdjustment(position, line.move);
-      line.quality = quality;
-      line.personality = (line.personality || 0) + quality;
-    }
-
-    // Keep the proven objective search scores untouched. Strategic discipline is
-    // a root selection preference, not a second evaluator that can distort the
-    // alpha-beta result or erase an already-proven tactical regression.
+    // Annotate the root for diagnostics, but do not rewrite objective scores or
+    // the proven personality term. Strategic discipline is applied only after
+    // the core engine has made its normal tactical/objective choice.
+    for (const line of result.lines) line.quality = rootStrategicAdjustment(position, line.move);
     return result;
   }
 
@@ -33,67 +23,62 @@ export class SearchEngine extends CoreSearchEngine {
     const exact = lines.filter(line => line.exact !== false);
     const pool = exact.length ? exact : lines;
     const bestScore = Math.max(...pool.map(line => line.score));
+    const selectedRisk = rootSafetyRisk(position, selected.move);
 
-    // First apply the strategic root preferences inside a bounded objective
-    // window. This is where move economy, queen discipline, castling urgency,
-    // and endgame progress influence play without overriding real tactics.
-    const strategicWindow = Math.max(this.config.selectionWindow ?? 32, 48);
-    const strategicCandidates = pool
+    // Material/tactical safety comes first. A cleanly hanging minor or major is
+    // not a style preference. If a competitive safe line exists, use it. Sound
+    // sacrifices survive when search proves enough compensation or no safe
+    // alternative exists inside a generous but still finite objective margin.
+    if (selectedRisk >= 560) {
+      const margin = selectedRisk >= 820 ? 210 : 155;
+      const alternatives = pool
+        .filter(line => line.score >= bestScore - margin)
+        .map(line => ({ ...line, safetyRisk: rootSafetyRisk(position, line.move) }))
+        .filter(line => line.safetyRisk < 500)
+        .sort((a, b) => (b.score + (b.personality || 0) * 0.35) - (a.score + (a.personality || 0) * 0.35));
+
+      if (alternatives.length) {
+        const rescue = alternatives[0];
+        return {
+          move: rescue.move,
+          score: rescue.score + (rescue.personality || 0),
+          objectiveScore: rescue.score,
+          pv: rescue.pv,
+          risk: rescue.safetyRisk,
+        };
+      }
+      return { ...selected, risk: Math.max(selected.risk || 0, selectedRisk) };
+    }
+
+    // Only after the normal move is tactically sound do the new opening/endgame
+    // preferences get a vote. They may break near-ties, never overturn a real
+    // search advantage. This keeps Vanta's established tactical personality
+    // authoritative while discouraging knight tourism, queen wandering, and
+    // passive endgame shuffling.
+    const strategicWindow = Math.min(42, Math.max(24, this.config.selectionWindow ?? 32));
+    const candidates = pool
       .filter(line => line.score >= bestScore - strategicWindow)
       .map(line => ({
         ...line,
         safetyRisk: rootSafetyRisk(position, line.move),
-        strategicComposite: line.score + (line.personality || 0),
+        quality: line.quality ?? rootStrategicAdjustment(position, line.move),
       }))
+      .filter(line => line.safetyRisk < 500)
+      .map(line => ({ ...line, strategicComposite: line.score + (line.personality || 0) + line.quality }))
       .sort((a, b) => b.strategicComposite - a.strategicComposite);
 
-    let pick = strategicCandidates[0] || null;
-    if (pick && pick.safetyRisk < 560) {
+    const strategic = candidates[0];
+    if (strategic && strategic.strategicComposite > (selected.score ?? selected.objectiveScore ?? -Infinity) + 4) {
       return {
-        move: pick.move,
-        score: pick.strategicComposite,
-        objectiveScore: pick.score,
-        pv: pick.pv,
-        risk: pick.safetyRisk,
+        move: strategic.move,
+        score: strategic.strategicComposite,
+        objectiveScore: strategic.score,
+        pv: strategic.pv,
+        risk: strategic.safetyRisk,
       };
     }
 
-    const selectedRisk = rootSafetyRisk(position, selected.move);
-    if ((!pick || selectedRisk < pick.safetyRisk) && selectedRisk < 560) {
-      return { ...selected, risk: Math.max(selected.risk || 0, selectedRisk) };
-    }
-
-    // A cleanly hanging minor/major is not merely a style penalty. If a
-    // competitive safe line exists, rescue the piece. Sound sacrifices still
-    // survive when search proves enough compensation or no safe competitive
-    // alternative exists.
-    const riskToBeat = Math.max(selectedRisk, pick?.safetyRisk || 0);
-    const margin = riskToBeat >= 820 ? 170 : 125;
-    const alternatives = pool
-      .filter(line => line.score >= bestScore - margin)
-      .map(line => ({ ...line, safetyRisk: rootSafetyRisk(position, line.move) }))
-      .filter(line => line.safetyRisk < 500)
-      .sort((a, b) => (b.score + (b.personality || 0) * 0.35) - (a.score + (a.personality || 0) * 0.35));
-
-    if (!alternatives.length) {
-      if (pick) return {
-        move: pick.move,
-        score: pick.strategicComposite,
-        objectiveScore: pick.score,
-        pv: pick.pv,
-        risk: pick.safetyRisk,
-      };
-      return { ...selected, risk: Math.max(selected.risk || 0, selectedRisk) };
-    }
-
-    const rescue = alternatives[0];
-    return {
-      move: rescue.move,
-      score: rescue.score + (rescue.personality || 0),
-      objectiveScore: rescue.score,
-      pv: rescue.pv,
-      risk: rescue.safetyRisk,
-    };
+    return { ...selected, risk: Math.max(selected.risk || 0, selectedRisk) };
   }
 
   orderMoves(position, moves, ply, ttMove) {
