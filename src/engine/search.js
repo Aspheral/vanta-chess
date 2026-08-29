@@ -514,10 +514,6 @@ export class SearchEngine {
     const scored = eligible.map(scoreLine).sort((a, b) => b.composite - a.composite);
     let pick = scored[0] || pool[0];
 
-    // The normal personality window is intentionally narrow. A clean material
-    // loss is different: it may inspect farther-away exact root lines to find a
-    // sane escape. The unsafe move survives only when it is forcing or when
-    // objective search proves compensation substantially larger than the loss.
     if (pick?.materialLoss >= 180) {
       const pickedAfter = position.makeMove(pick.move);
       const capturedValue = pick.move.captured ? (PIECE_VALUES[typeOf(pick.move.captured)] || 0) : 0;
@@ -538,16 +534,28 @@ export class SearchEngine {
       }
     }
 
+    // When already down material, speculative exchanges need a higher burden
+    // of proof. A high-risk move may still be played if its objective advantage
+    // over every safer line is larger than the material being risked.
+    const rootMaterial = materialBalance(position, position.turn);
+    if (rootMaterial <= -150 && pick && (pick.risk >= 300 || pick.materialLoss >= 180)) {
+      const rescueWindow = Math.min(520, Math.max(220, pick.materialLoss + 180));
+      const safer = pool
+        .filter(line => line.score >= pick.score - rescueWindow)
+        .map(scoreLine)
+        .filter(line => line.risk + 120 < pick.risk || line.materialLoss + 120 < pick.materialLoss)
+        .sort((a, b) => b.composite - a.composite)[0];
+      if (safer && pick.score - safer.score <= Math.max(180, pick.materialLoss + 140)) pick = safer;
+    }
+
     if (pick?.risk >= 500) {
-      const rescuePool = pool.filter(line => line.score >= bestScore - 120).map(line => ({
-        ...line,
-        risk: rootTacticalRisk(position, line.move, this.seeMemo),
-        materialLoss: rootImmediateMaterialLoss(position, line.move, this.seeMemo),
-      }));
+      const rescuePool = pool
+        .filter(line => line.score >= bestScore - 120)
+        .map(scoreLine);
       const safer = rescuePool
         .filter(line => line.risk + 220 < pick.risk && line.materialLoss < 180)
-        .sort((a, b) => (b.score - b.risk * 0.18) - (a.score - a.risk * 0.18))[0];
-      if (safer) pick = { ...safer, composite: safer.score };
+        .sort((a, b) => b.composite - a.composite)[0];
+      if (safer) pick = safer;
     }
 
     return {
