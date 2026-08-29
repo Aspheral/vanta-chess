@@ -32,19 +32,17 @@ test('the Na4 cage is recognized as a trap rather than blamed on the later c3 mo
     `${trappedPiecePenalty(escaped,'w')} vs ${trappedPiecePenalty(trapped,'w')}`);
 });
 
-test('before the cage closes Vanta sees quiet b5 and avoids the careless f4 plan',()=>{
-  const p=Position.fromFEN('rnb1kb1r/ppp1pppp/3q1n2/4N3/N2p4/8/PPPPPPPP/R1BQKB1R w KQkq - 2 5');
-  const f4=p.moveFromUci('f2f4');
-  const b3=p.moveFromUci('b2b3');
-  assert.ok(f4&&b3);
-  const afterF4=p.makeMove(f4);
-  const b5=afterF4.moveFromUci('b7b5');
-  assert.ok(b5);
-  assert.ok(quietThreatScore(afterF4,b5)>=68,`b5 threat ${quietThreatScore(afterF4,b5)}`);
-  assert.ok(strategicMoveBonus(p,f4)+25<strategicMoveBonus(p,b3),
-    `f4 ${strategicMoveBonus(p,f4)}, b3 ${strategicMoveBonus(p,b3)}`);
+test('Vanta avoids Na4 before the b5 cage can form',()=>{
+  // 1.Nf3 Nf6 2.Nc3 d5 3.Ne5 d4. The actual game continued 4.Na4?, moving
+  // the same knight again while both bishops and the other knight still need
+  // useful work. That move is the strategic decision that makes ...Qd6, f4,
+  // ...b5 such an easy cage later.
+  const p=Position.fromFEN('rnbqkb1r/ppp1pppp/5n2/4N3/3p4/2N5/PPPPPPPP/R1BQKB1R w KQkq - 0 4');
+  const na4=p.moveFromUci('c3a4');
+  assert.ok(na4);
+  assert.ok(strategicMoveBonus(p,na4)<=-30,`Na4 strategic bonus ${strategicMoveBonus(p,na4)}`);
   const r=engine(1100,3).search(p,{moveTimeMs:1100,maxDepth:3});
-  assert.notEqual(moveToUci(r.move),'f2f4',`still walked into the b5 cage: ${JSON.stringify(r.candidates)}`);
+  assert.notEqual(moveToUci(r.move),'c3a4',`still chose Na4: ${JSON.stringify(r.candidates)}`);
 });
 
 test('opening move economy penalizes knight tourism while pieces remain home',()=>{
