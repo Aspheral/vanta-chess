@@ -56,6 +56,89 @@ function attackersOf(position, square, color) {
   return count;
 }
 
+function lowestAttackerValue(position, square, color) {
+  let best = Infinity;
+  for (let from = 0; from < 64; from++) {
+    const piece = position.board[from];
+    if (!piece || colorOf(piece) !== color || !pieceAttacksSquare(position, from, square)) continue;
+    best = Math.min(best, PIECE_VALUES[typeOf(piece)] || 0);
+  }
+  return Number.isFinite(best) ? best : 0;
+}
+
+function pseudoDestinations(position, square) {
+  const piece = position.board[square];
+  if (!piece) return [];
+  const color = colorOf(piece), type = typeOf(piece), [r, c] = rowCol(square);
+  const destinations = [];
+  const add = (rr, cc) => {
+    if (!inBounds(rr, cc)) return false;
+    const target = rr * 8 + cc;
+    const occupant = position.board[target];
+    if (!occupant || colorOf(occupant) !== color) destinations.push(target);
+    return !occupant;
+  };
+
+  if (type === 'n') {
+    for (const [dr, dc] of KNIGHT_DELTAS) add(r + dr, c + dc);
+    return destinations;
+  }
+  if (type === 'b' || type === 'r' || type === 'q') {
+    const dirs = type === 'b' ? BISHOP_DIRS : type === 'r' ? ROOK_DIRS : QUEEN_DIRS;
+    for (const [dr, dc] of dirs) {
+      let rr = r + dr, cc = c + dc;
+      while (inBounds(rr, cc)) {
+        const clear = add(rr, cc);
+        if (!clear) break;
+        rr += dr; cc += dc;
+      }
+    }
+  }
+  return destinations;
+}
+
+/**
+ * Cheap trap detector for non-pawn pieces. It deliberately does not call
+ * legalMoves(), because this runs in static evaluation. A square counts as an
+ * escape when it is not currently controlled, or when moving there captures a
+ * piece at least as valuable as the trapped piece. The purpose is not perfect
+ * tactics, but recognizing cages such as Na4 followed by ...b5 before the
+ * material actually disappears one ply beyond the horizon.
+ */
+export function trappedPiecePenalty(position, color) {
+  const enemy = opposite(color);
+  let total = 0;
+  for (let sq = 0; sq < 64; sq++) {
+    const piece = position.board[sq];
+    if (!piece || colorOf(piece) !== color) continue;
+    const type = typeOf(piece);
+    if (!['n', 'b', 'r', 'q'].includes(type) || !position.isSquareAttacked(sq, enemy)) continue;
+
+    const value = PIECE_VALUES[type] || 0;
+    const attacker = lowestAttackerValue(position, sq, enemy);
+    const defenders = attackersOf(position, sq, color);
+    let safeEscapes = 0;
+    for (const target of pseudoDestinations(position, sq)) {
+      const occupant = position.board[target];
+      if (occupant && colorOf(occupant) === enemy && (PIECE_VALUES[typeOf(occupant)] || 0) >= value) {
+        safeEscapes++;
+        continue;
+      }
+      if (!position.isSquareAttacked(target, enemy)) safeEscapes++;
+    }
+
+    if (safeEscapes === 0 && attacker > 0 && attacker < value) {
+      let penalty = type === 'q' ? 220 : type === 'r' ? 165 : 118;
+      if (defenders === 0) penalty += type === 'q' ? 55 : type === 'r' ? 45 : 42;
+      if (attacker <= PIECE_VALUES.p) penalty += type === 'q' ? 35 : type === 'r' ? 30 : 28;
+      total += penalty;
+    } else if (safeEscapes === 1 && attacker > 0 && attacker < value && defenders === 0) {
+      total += type === 'q' ? 42 : type === 'r' ? 32 : 24;
+    }
+  }
+  return Math.min(320, total);
+}
+
 function isPassedPawn(position, square, color) {
   const [row, file] = rowCol(square);
   const dir = color === WHITE ? -1 : 1;
@@ -162,17 +245,18 @@ function passedPawnRaceScore(position, perspective) {
 
 /**
  * Small phase-aware strategic supplement. The base evaluator remains the main
- * positional authority. This layer is intentionally narrow: in simplified
- * positions kings become fighting pieces, advanced passers are tempo races,
- * and rooks/blockaders receive role value that ordinary mobility can miss.
+ * positional authority. Piece traps are included at every phase because a
+ * caged minor is tactical material, while king activity and pawn-race terms
+ * switch on only after the board simplifies.
  */
 export function strategicEvaluation(position, perspective = position.turn) {
-  if (!isEndgame(position)) return 0;
+  const trapBalance = trappedPiecePenalty(position, opposite(perspective)) - trappedPiecePenalty(position, perspective);
+  if (!isEndgame(position)) return Math.round(clamp(trapBalance, -180, 180));
   const { total } = nonPawnMaterial(position);
   const factor = total <= 1800 ? 1 : 0.7;
   const kingActivity = (kingCentralization(position, perspective) - kingCentralization(position, opposite(perspective))) * factor;
   const races = passedPawnRaceScore(position, perspective);
-  return Math.round(clamp(kingActivity + races, -150, 150));
+  return Math.round(clamp(trapBalance + kingActivity + races, -190, 190));
 }
 
 function undevelopedHomeMinors(position, color) {
@@ -189,6 +273,16 @@ function isTactical(position, move, next) {
 
 function castlingRightsRemain(position, color) {
   return [...HOME[color].rights].some(right => position.castling.includes(right));
+}
+
+function quietTrapForecast(position, defenderColor) {
+  const before = trappedPiecePenalty(position, defenderColor);
+  let worstIncrease = 0;
+  for (const threat of quietThreatMoves(position, 4)) {
+    const after = position.makeMove(threat);
+    worstIncrease = Math.max(worstIncrease, trappedPiecePenalty(after, defenderColor) - before);
+  }
+  return Math.max(0, worstIncrease);
 }
 
 /**
@@ -228,6 +322,14 @@ export function strategicMoveBonus(position, move) {
     }
   }
 
+  const trapBefore = trappedPiecePenalty(position, us);
+  const trapAfter = trappedPiecePenalty(next, us);
+  if (trapAfter > trapBefore && !tactical) bonus -= Math.min(70, Math.round((trapAfter - trapBefore) * 0.45));
+  if (!tactical) {
+    const forecast = quietTrapForecast(next, us);
+    if (forecast > 0) bonus -= Math.min(72, Math.round(forecast * 0.38));
+  }
+
   if (isEndgame(position)) {
     const before = strategicEvaluation(position, us);
     const after = strategicEvaluation(next, us);
@@ -239,7 +341,7 @@ export function strategicMoveBonus(position, move) {
     }
   }
 
-  return Math.round(clamp(bonus, -90, 70));
+  return Math.round(clamp(bonus, -110, 70));
 }
 
 /**
