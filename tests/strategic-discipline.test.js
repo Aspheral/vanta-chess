@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { replayPgn, fenBeforePly } from '../src/chess/pgn.js';
 import { Position, moveToUci } from '../src/chess/position.js';
 import { SearchEngine } from '../src/engine/search.js';
+import { rootTacticalRisk } from '../src/engine/tactics.js';
 import {
   openingMoveDiscipline, strategicPositionScore, rootImmediateMaterialLoss,
   quietTacticalThreatScore, isEndgameCriticalMove,
@@ -73,10 +74,15 @@ test('Vanta prevents the DevTheExpertBack knight trap at 4.Na4 instead of preten
   const replay=replayPgn(DEV_LOSS);
   const p=Position.fromFEN(fenBeforePly(replay,7)); // before 4.Na4
   const na4=p.moveFromUci('c3a4');
-  assert.ok(na4);
+  const nb5=p.moveFromUci('c3b5');
+  assert.ok(na4&&nb5);
   assert.ok(openingMoveDiscipline(p,na4)<=-25,`Na4 discipline ${openingMoveDiscipline(p,na4)}`);
+  const diagnostics={
+    na4:{risk:rootTacticalRisk(p,na4),loss:rootImmediateMaterialLoss(p,na4),discipline:openingMoveDiscipline(p,na4)},
+    nb5:{risk:rootTacticalRisk(p,nb5),loss:rootImmediateMaterialLoss(p,nb5),discipline:openingMoveDiscipline(p,nb5)},
+  };
   const r=engine(950,3).search(p,{moveTimeMs:950,maxDepth:3});
-  assert.notEqual(moveToUci(r.move),'c3a4',JSON.stringify(r.candidates));
+  assert.notEqual(moveToUci(r.move),'c3a4',JSON.stringify({diagnostics,candidates:r.candidates}));
 });
 
 test('after the trap is sprung every legal Na4 retreat already loses the knight immediately',()=>{
