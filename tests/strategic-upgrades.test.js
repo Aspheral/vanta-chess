@@ -24,7 +24,7 @@ function playUci(moves) {
 
 test('strict hanging-piece gate blocks the real c3 knight abandonment from the DevTheExpertBack game',()=>{
   const p=playUci([
-    'g1f3','g8f6','b1c3','d7d5','f3e5','d5d4','e5a4','d8d6','f2f4','b7b5',
+    'g1f3','g8f6','b1c3','d7d5','f3e5','d5d4','c3a4','d8d6','f2f4','b7b5',
   ]);
   const blunder=p.moveFromUci('c2c3');
   const rescue=p.moveFromUci('a4c5');
@@ -43,7 +43,7 @@ test('strict hanging-piece gate blocks the real c3 knight abandonment from the D
 
 test('strict hanging-piece gate still permits a search-proven sacrifice',()=>{
   const p=playUci([
-    'g1f3','g8f6','b1c3','d7d5','f3e5','d5d4','e5a4','d8d6','f2f4','b7b5',
+    'g1f3','g8f6','b1c3','d7d5','f3e5','d5d4','c3a4','d8d6','f2f4','b7b5',
   ]);
   const risky=p.moveFromUci('c2c3');
   const safe=p.moveFromUci('a4c5');
@@ -90,8 +90,8 @@ test('endgame specialist activates in low material and rewards active kings',()=
 });
 
 test('endgame specialist rewards a rook correctly placed behind its passed pawn',()=>{
-  const behind=Position.fromFEN('7k/8/4P3/8/4K3/8/8/4R3 w - - 0 1');
-  const sideways=Position.fromFEN('7k/8/4P3/8/4K3/8/8/R7 w - - 0 1');
+  const behind=Position.fromFEN('7k/8/4P3/8/3K4/8/8/4R3 w - - 0 1');
+  const sideways=Position.fromFEN('7k/8/4P3/8/3K4/8/8/R7 w - - 0 1');
   const a=endgameSpecialistBreakdown(behind,'w');
   const b=endgameSpecialistBreakdown(sideways,'w');
   assert.ok(a.passers>=b.passers+15,`${JSON.stringify({behind:a,sideways:b})}`);
@@ -104,7 +104,7 @@ test('advanced passed-pawn endings are marked volatile for search selectivity wi
 
 test('search integration keeps a clean hanging-piece blunder out of the final choice',()=>{
   const p=playUci([
-    'g1f3','g8f6','b1c3','d7d5','f3e5','d5d4','e5a4','d8d6','f2f4','b7b5',
+    'g1f3','g8f6','b1c3','d7d5','f3e5','d5d4','c3a4','d8d6','f2f4','b7b5',
   ]);
   const engine=new SearchEngine({maxDepth:3,moveTimeMs:900,nodeLimit:240000,selectionWindow:32,evalNoise:0});
   const result=engine.search(p,{moveTimeMs:900,maxDepth:3});
