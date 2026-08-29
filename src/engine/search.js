@@ -7,7 +7,7 @@ import {
   hasNearPromotion, allocateRapidTime,
 } from './tactics.js';
 import {
-  strategicEvaluation, strategicMoveBonus, quietThreatScore, quietThreatMoves,
+  strategicEvaluation, strategicMoveBonus, quietThreatScore,
 } from './strategy.js';
 
 const INF = 1_000_000;
@@ -51,7 +51,11 @@ export class SearchEngine {
     const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 15)}`;
     const cached = this.evalCache.get(key);
     if (cached !== undefined) return cached;
-    const score = evaluate(position, perspective) + strategicEvaluation(position, perspective);
+    // Keep the validated opening/middlegame evaluator untouched. The extra
+    // endgame model activates only once a real game can plausibly have
+    // simplified, avoiding a tax on every early search leaf.
+    const endgame = position.fullmove >= 14 ? strategicEvaluation(position, perspective) : 0;
+    const score = evaluate(position, perspective) + endgame;
     this.evalCache.set(key, score);
     if (this.evalCache.size > 40000) {
       let removed = 0;
@@ -302,9 +306,8 @@ export class SearchEngine {
       const next = position.makeMove(move);
       const quiet = !(move.flags & FLAGS.CAPTURE) && !move.promotion;
       const givesCheck = depth >= 3 && next.isInCheck();
-      const strategicThreat = depth >= 3 && i >= 5 && quiet && quietThreatScore(position, move) >= 58;
       let reduction = 0;
-      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !volatile && !strategicThreat) {
+      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !volatile) {
         reduction = depth >= 5 && i >= 9 ? 2 : 1;
       }
 
@@ -394,29 +397,15 @@ export class SearchEngine {
 
     if (qply > 8 || ply > 18 || this.timeUp()) return inCheck ? alpha : Math.max(alpha, stand);
 
-    // At the first horizon node, include a small set of genuinely forcing quiet
-    // moves. This covers quiet checks plus pawn/minor forks, attacks on loose
-    // high-value pieces and advanced passed-pawn pushes without turning qsearch
-    // into a second full-width search.
-    if (!inCheck && qply === 0) {
+    // Keep the proven qsearch shape. Only quiet checks enter the first horizon
+    // when the position is already volatile; broader quiet-threat recognition
+    // is deliberately root-scoped so it cannot erase a ply of calculation.
+    if (!inCheck && qply === 0 && cheapVolatility(position) >= 48) {
       const existing = new Set(moves.map(moveToUci));
-      if (cheapVolatility(position) >= 48) {
-        for (const move of position.legalMoves()) {
-          const uci = moveToUci(move);
-          if (existing.has(uci)) continue;
-          if (move.flags & FLAGS.CAPTURE || move.promotion) continue;
-          if (position.makeMove(move).isInCheck()) {
-            moves.push(move);
-            existing.add(uci);
-          }
-        }
-      }
-      for (const move of quietThreatMoves(position, 5)) {
-        const uci = moveToUci(move);
-        if (!existing.has(uci)) {
-          moves.push(move);
-          existing.add(uci);
-        }
+      for (const move of position.legalMoves()) {
+        if (existing.has(moveToUci(move))) continue;
+        if (move.flags & FLAGS.CAPTURE || move.promotion) continue;
+        if (position.makeMove(move).isInCheck()) moves.push(move);
       }
     }
 
@@ -454,10 +443,10 @@ export class SearchEngine {
           score += Math.max(-12000, Math.min(30000, see * 30));
         }
       }
-      if (ply <= 1 && !(move.flags & FLAGS.CAPTURE) && !move.promotion) {
-        if (position.makeMove(move).isInCheck()) score += 62_000;
+      if (ply <= 1 && !(move.flags & FLAGS.CAPTURE) && !move.promotion && position.makeMove(move).isInCheck()) score += 62_000;
+      if (ply === 0 && !(move.flags & FLAGS.CAPTURE) && !move.promotion) {
         const threat = quietThreatScore(position, move);
-        if (threat >= 58) score += threat * 420;
+        if (threat >= 58) score += threat * 220;
       }
       if (killers[0] === u) score += 18_000;
       else if (killers[1] === u) score += 14_000;
@@ -510,10 +499,9 @@ export class SearchEngine {
 
     let pick = scored[0] || pool[0];
 
-    // Clean minor-piece losses now get the same practical seatbelt that was
-    // previously reserved mostly for rook/queen disasters. Search can still
-    // play a real sacrifice if all competitive alternatives are worse, but a
-    // vague personality bonus cannot choose a hanging knight over a safe move.
+    // Clean minor-piece losses get a practical rescue window as well as the
+    // existing rook/queen guard. Search may still play a real sacrifice when
+    // no competitive safe alternative exists.
     if (pick?.risk >= 260) {
       const rescueWindow = pick.risk >= 500 ? 120 : 90;
       const requiredImprovement = pick.risk >= 500 ? 220 : 140;
