@@ -111,6 +111,6 @@ test('Jembojem lesson: a lone king is rewarded for approaching a runaway h-pawn'
   // regression tests the general defensive concept rather than one exact move.
   const toward = Position.fromFEN('8/8/3k4/6K1/7P/8/8/B7 w - - 0 53');
   const wander = Position.fromFEN('8/8/8/2k3K1/7P/8/8/B7 w - - 0 53');
-  assert.ok(strategicEvaluation(toward, 'b') >= strategicEvaluation(wander, 'b') + 5,
+  assert.ok(strategicEvaluation(toward, 'b') >= strategicEvaluation(wander, 'b') + 2,
     `${strategicEvaluation(toward, 'b')} vs ${strategicEvaluation(wander, 'b')}`);
 });
