@@ -1,4 +1,26 @@
+import { Position } from '../chess/position.js';
 import { strengthConfig } from './personality.js';
+import { practicalSafetyExclusions } from './practical-safety.js';
+
+/**
+ * Ponder hits normally bypass a fresh worker search so Vanta can reply
+ * instantly. Validate the cached engine reply against the same root safety
+ * policy used by live searches; if the opponent move created an attacked-piece
+ * crisis, an unsafe cached reply must be thrown away and recalculated.
+ */
+export function isPonderBranchPracticallySafe(fen, opponentUci, branch) {
+  try {
+    if (!branch?.engineMove) return false;
+    const position = Position.fromFEN(fen);
+    const opponentMove = position.moveFromUci(opponentUci);
+    if (!opponentMove) return false;
+    const replyPosition = position.makeMove(opponentMove);
+    const unsafe = practicalSafetyExclusions(replyPosition);
+    return !unsafe.some(item => item.uci === branch.engineMove);
+  } catch {
+    return false;
+  }
+}
 
 export class EngineController extends EventTarget {
   constructor(workerUrl, config={}) {
@@ -70,7 +92,8 @@ export class EngineController extends EventTarget {
 
   consumePonder(opponentUci,currentFen) {
     if(this.ponderFen!==currentFen) return null;
-    const branch=this.ponderCache.get(opponentUci)||null;
+    const cached=this.ponderCache.get(opponentUci)||null;
+    const branch=cached&&isPonderBranchPracticallySafe(currentFen,opponentUci,cached)?cached:null;
     if(branch) this.ponderHits++; else this.ponderMisses++;
     this.ponderCache.clear(); this.ponderFen=null;
     return branch;

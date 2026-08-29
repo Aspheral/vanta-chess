@@ -4,9 +4,9 @@ export const ADAPTIVE_STRENGTH = Object.freeze({
   minElo: 1500,
   typicalUpperElo: 1750,
   maxElo: 2050,
-  minDepth: 6,
+  minDepth: 7,
   maxDepth: 9,
-  minNodeLimit: 260000,
+  minNodeLimit: 420000,
   maxNodeLimit: 1100000,
   maxRapidThinkMs: 7500,
 });
@@ -34,8 +34,7 @@ export function targetEloForCriticality(criticality) {
 function depthForElo(targetElo) {
   if (targetElo >= 1975) return 9;
   if (targetElo >= 1850) return 8;
-  if (targetElo >= 1700) return 7;
-  return 6;
+  return 7;
 }
 
 function nodeLimitForElo(targetElo) {
@@ -48,13 +47,18 @@ function nodeLimitForElo(targetElo) {
 function selectionWindowForElo(targetElo) {
   const span = ADAPTIVE_STRENGTH.maxElo - ADAPTIVE_STRENGTH.minElo;
   const t = clamp((targetElo - ADAPTIVE_STRENGTH.minElo) / span, 0, 1);
-  return Math.round(32 - 24 * t);
+  // Personality should choose among nearly equivalent moves, not manufacture
+  // a strategic mistake. Keep a small amount of stylistic freedom at 1500
+  // and tighten it further as the adaptive target rises.
+  return Math.round(20 - 14 * t);
 }
 
-function evalNoiseForElo(targetElo) {
-  const span = ADAPTIVE_STRENGTH.maxElo - ADAPTIVE_STRENGTH.minElo;
-  const t = clamp((targetElo - ADAPTIVE_STRENGTH.minElo) / span, 0, 1);
-  return Math.max(0, Math.round(4 * (1 - t)));
+function evalNoiseForElo(_targetElo) {
+  // The uploaded rapid games repeatedly exposed quiet-position instability.
+  // Search already supplies variety through different positions and root
+  // personality scores; deliberate evaluation noise only makes the engine
+  // forget objectively better moves, so normal competitive play is deterministic.
+  return 0;
 }
 
 /**
@@ -93,7 +97,7 @@ export function adaptiveStrengthProfile(position, options = {}) {
       Math.max(softTimeMs + 80, rapid.hardTimeMs * hardFactor),
     ));
   } else {
-    const base = Math.max(80, Number(options.moveTimeMs) || 650);
+    const base = Math.max(80, Number(options.moveTimeMs) || 850);
     softTimeMs = Math.round(base * (0.68 + strength * 1.55));
     hardTimeMs = Math.round(Math.min(
       ADAPTIVE_STRENGTH.maxRapidThinkMs,

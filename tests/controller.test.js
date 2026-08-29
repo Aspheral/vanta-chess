@@ -27,7 +27,7 @@ test('hard cancellation terminates worker and stale search result is ignored', (
 test('ponder cache is position-specific, counts hit/miss, and survives refinement start', () => {
   FakeWorker.instances.length=0;
   const controller=new EngineController('worker.js');
-  const fen='position-a';
+  const fen='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
   const id=controller.ponder(fen,3,{});
   controller.onMessage({type:'ponder-result',searchId:id,branches:[{opponentMove:'e2e4',engineMove:'e7e5'}]});
   assert.equal(controller.consumePonder('e2e4','other-position'),null);

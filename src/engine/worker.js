@@ -1,6 +1,7 @@
 import { Position, moveToUci } from '../chess/position.js';
 import { SearchEngine } from './search.js';
 import { adaptiveStrengthProfile } from './adaptive-strength.js';
+import { searchWithPracticalSafety } from './practical-safety.js';
 
 let activeSearchId=0;
 let engine=new SearchEngine();
@@ -47,7 +48,7 @@ self.onmessage = event => {
       const position=Position.fromFEN(msg.fen);
       const request=adaptiveRequest(position,msg.config||{},msg.options||{});
       engine=new SearchEngine(request.config);
-      const result=engine.search(position,request.options);
+      const result=searchWithPracticalSafety(engine,position,request.options);
       if(activeSearchId!==id) return;
       self.postMessage({
         type:'search-result',

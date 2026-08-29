@@ -13,10 +13,14 @@ export const VANTA_PERSONALITY = Object.freeze({
 
 export const STRENGTH_PRESETS = Object.freeze({
   1200: { maxDepth: 4, moveTimeMs: 80, nodeLimit: 35000, selectionWindow: 105, evalNoise: 28, adaptiveStrength: false },
-  // 1500 is now Vanta's quiet-position baseline, not a hard ceiling.
-  1500: { maxDepth: 6, moveTimeMs: 650, nodeLimit: 260000, selectionWindow: 32, evalNoise: 4, adaptiveStrength: true },
-  1800: { maxDepth: 7, moveTimeMs: 1200, nodeLimit: 520000, selectionWindow: 18, evalNoise: 2, adaptiveStrength: false },
-  2050: { maxDepth: 9, moveTimeMs: 7500, nodeLimit: 1100000, selectionWindow: 8, evalNoise: 0, adaptiveStrength: false },
+  // Vanta keeps its attacking personality, but personality is now allowed to
+  // break ties rather than donate a third of a pawn for style. The August game
+  // audit showed that a 32 cp window plus noise was too permissive in quiet
+  // openings, where colorful rook/flank-pawn moves repeatedly displaced sound
+  // development. A deeper deterministic baseline keeps aggression search-led.
+  1500: { maxDepth: 7, moveTimeMs: 850, nodeLimit: 420000, selectionWindow: 20, evalNoise: 0, adaptiveStrength: true },
+  1800: { maxDepth: 8, moveTimeMs: 1500, nodeLimit: 650000, selectionWindow: 12, evalNoise: 0, adaptiveStrength: false },
+  2050: { maxDepth: 9, moveTimeMs: 7500, nodeLimit: 1100000, selectionWindow: 6, evalNoise: 0, adaptiveStrength: false },
 });
 
 export function strengthConfig(target = 1500) {
