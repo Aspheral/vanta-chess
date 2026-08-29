@@ -7,7 +7,7 @@ import {
   hasNearPromotion, allocateRapidTime,
 } from './tactics.js';
 import { strictHangingPieceGate, chooseSafestFallback } from './material-safety.js';
-import { openingMoveEconomyBonus, applyOpeningMoveEconomyGate } from './opening-economy.js';
+import { openingMoveEconomyBonus } from './opening-economy.js';
 import { endgameSpecialistMoveBonus } from './endgame-specialist.js';
 
 const INF = 1_000_000;
@@ -473,8 +473,7 @@ export class SearchEngine {
     const exactLines = lines.filter(line => line.exact !== false);
     const rawPool = exactLines.length ? exactLines : lines;
     const hangingGate = strictHangingPieceGate(position, rawPool, this.seeMemo);
-    const economyGate = applyOpeningMoveEconomyGate(position, hangingGate.lines);
-    const pool = economyGate.lines.length ? economyGate.lines : hangingGate.lines.length ? hangingGate.lines : rawPool;
+    const pool = hangingGate.lines.length ? hangingGate.lines : rawPool;
     const bestScore = Math.max(...pool.map(line => line.score));
 
     if (Math.abs(bestScore) >= MATE_SCORE - 1000) {
