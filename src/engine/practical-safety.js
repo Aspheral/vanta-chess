@@ -3,7 +3,7 @@ import { colorOf, typeOf, opposite } from '../chess/constants.js';
 import { staticExchangeEval } from './tactics.js';
 
 const PROTECTED_TYPES = new Set(['n', 'b', 'r', 'q']);
-export const AVOIDABLE_LOSS_FLOOR = 170;
+export const AVOIDABLE_LOSS_FLOOR = 110;
 
 /**
  * Measure the net material Vanta leaves on the table when it plays a move but
@@ -14,13 +14,16 @@ export const AVOIDABLE_LOSS_FLOOR = 170;
  * a hole in that policy: after ...b5, 6.c3 allowed ...bxa4 and a later Qxa4,
  * a clean knight-for-pawn loss of roughly 2.2 pawns. That sits below the old
  * 2.4-pawn abandonment threshold, so the move could pass as practically safe.
+ * A second loss showed the same family of error with Qxg7: Vanta pocketed a
+ * pawn while leaving Nb5 to ...axb5. After crediting both pawn gains, the net
+ * immediate loss is still about 1.2 pawns, so the root floor is deliberately
+ * low enough to catch that avoidable trade too.
  *
  * This helper is narrower than a generic sacrifice veto. It only considers a
  * piece that was attacked before our move and stayed on the same square. A
  * checking move is exempt so a real forcing zwischenzug remains search-led.
  * Captures receive credit for their legal SEE gain before the ignored loss is
- * judged, which also catches pawn-grabbing moves such as Qxg7 that leave a
- * more valuable attacked knight behind.
+ * judged.
  */
 export function ignoredAttackedPieceLoss(position, move, seeMemo = new Map()) {
   if (!move) return 0;
