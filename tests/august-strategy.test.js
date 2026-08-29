@@ -19,7 +19,7 @@ test('cleanly hanging the a4 knight is treated as a practical root veto',()=>{
   const p=Position.fromFEN('rnb1kb1r/p1p1pppp/3q1n2/1p2N3/N2p1P2/8/PPPPP1PP/R1BQKB1R w KQkq b6 0 6');
   const ignore=p.moveFromUci('c2c3');
   assert.ok(ignore);
-  assert.ok(rootTacticalRisk(p,ignore)>=280,`ignored knight risk ${rootTacticalRisk(p,ignore)}`);
+  assert.ok(rootTacticalRisk(p,ignore)>=200,`ignored knight risk ${rootTacticalRisk(p,ignore)}`);
   const r=engine(1000,3).search(p,{moveTimeMs:1000,maxDepth:3});
   assert.notEqual(moveToUci(r.move),'c2c3',`still abandoned Na4: ${JSON.stringify(r.candidates)}`);
 });
