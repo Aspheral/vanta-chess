@@ -52,9 +52,6 @@ export class SearchEngine {
     const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 16)}`;
     const cached = this.evalCache.get(key);
     if (cached !== undefined) return cached;
-    // Opening development/queen/castling discipline is deliberately root-only.
-    // Static search already evaluates development and king safety. Only the
-    // genuinely new endgame specialist knowledge belongs at every leaf.
     const score = evaluate(position, perspective) + endgameStrategicScore(position, perspective);
     this.evalCache.set(key, score);
     if (this.evalCache.size > 40000) {
@@ -272,8 +269,6 @@ export class SearchEngine {
     for (const hash of pathHashes) if (hash === position.hash) priorOccurrences++;
     const inCheck = position.isInCheck();
     if (priorOccurrences >= 2) return this.repetitionUtility(position);
-    // A second occurrence is not a terminal node. Only at the horizon do we
-    // prefer progress over another cycle, preserving full tactical search.
     if (priorOccurrences >= 1 && depth <= 0 && !inCheck) return this.cycleUtility(position);
     if (position.halfmove >= 100) return 0;
 
@@ -413,8 +408,6 @@ export class SearchEngine {
         const next = position.makeMove(move);
         const checkPriority = volatility >= 48 && next.isInCheck() ? 520 : 0;
         const threatPriority = quietTacticalThreatScore(position, move);
-        // Only concrete passed-pawn pushes enter qsearch. General king activity
-        // is positional and stays in evaluation/LMR protection.
         const endgamePriority = isEndgamePassedPawnPush(position, move) ? 330 : 0;
         const priority = Math.max(checkPriority, threatPriority, endgamePriority);
         if (priority >= 300) tacticalQuiets.push({ move, priority });
@@ -495,7 +488,7 @@ export class SearchEngine {
     const window = this.config.selectionWindow ?? 32;
     const eligible = pool.filter(line => line.score >= bestScore - window);
     const danger = cheapVolatility(position);
-    const scored = eligible.map(line => {
+    const scoreLine = line => {
       const deterministicNoise = this.config.evalNoise
         ? pseudoNoise(position.hash, line.move, this.config.evalNoise)
         : 0;
@@ -509,8 +502,6 @@ export class SearchEngine {
           : risk >= 300
             ? 35 + (risk - 300) * 0.08
             : 0;
-      // Legal SEE reports net exchange loss. Losing a minor to a pawn is about
-      // 220cp, so 180cp is already a serious root safety event.
       const materialPenalty = materialLoss >= 500
         ? 150 + (materialLoss - 500) * 0.22
         : materialLoss >= 180
@@ -518,15 +509,33 @@ export class SearchEngine {
           : 0;
       const composite = line.score + personality + deterministicNoise - riskPenalty - materialPenalty;
       return { ...line, personality, risk, materialLoss, composite };
-    }).sort((a, b) => b.composite - a.composite);
+    };
 
+    const scored = eligible.map(scoreLine).sort((a, b) => b.composite - a.composite);
     let pick = scored[0] || pool[0];
 
+    // The normal personality window is intentionally narrow. A clean material
+    // loss is different: it may inspect farther-away exact root lines to find a
+    // sane escape. The unsafe move survives only when it is forcing or when
+    // objective search proves compensation substantially larger than the loss.
     if (pick?.materialLoss >= 180) {
-      const safe = scored
-        .filter(line => line.materialLoss < 120 && line.score >= bestScore - 110)
-        .sort((a, b) => b.composite - a.composite)[0];
-      if (safe) pick = safe;
+      const pickedAfter = position.makeMove(pick.move);
+      const capturedValue = pick.move.captured ? (PIECE_VALUES[typeOf(pick.move.captured)] || 0) : 0;
+      const forcingCompensation = pickedAfter.isInCheck()
+        || Boolean(pick.move.promotion)
+        || capturedValue >= PIECE_VALUES.n
+        || quietTacticalThreatScore(position, pick.move) >= 400;
+
+      if (!forcingCompensation) {
+        const rescueWindow = Math.min(520, Math.max(260, pick.materialLoss + 220));
+        const rescueLines = pool
+          .filter(line => line.score >= bestScore - rescueWindow)
+          .map(scoreLine)
+          .filter(line => line.materialLoss < 120)
+          .sort((a, b) => b.composite - a.composite);
+        const safe = rescueLines[0];
+        if (safe && pick.score - safe.score <= pick.materialLoss + 160) pick = safe;
+      }
     }
 
     if (pick?.risk >= 500) {
