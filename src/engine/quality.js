@@ -183,8 +183,7 @@ function endgameSideValue(position, color) {
 export function strategicPositionValue(position, perspective = position.turn) {
   // Opening discipline stays root-only. Injecting it into every leaf made the
   // same concept count repeatedly and disturbed already-proven tactical lines.
-  // The endgame layer is genuinely positional and therefore belongs in static
-  // evaluation once material has thinned out.
+  // The endgame value is exposed for root progress comparisons and tests.
   const endgame = endgameSideValue(position, perspective) - endgameSideValue(position, opposite(perspective));
   return Math.round(endgame);
 }
@@ -241,7 +240,7 @@ export function immediateMaterialLossRisk(position, move) {
   // Only call it an immediate-loss error when the candidate leaves one of our
   // already-attacked valuable pieces sitting on the same square and the enemy
   // can profitably take it. This prevents an unrelated tactical capture
-  // elsewhere on the board from falsely marking every candidate as unsafe.
+  // elsewhere from falsely marking every candidate as unsafe.
   for (let sq = 0; sq < 64; sq++) {
     const piece = position.board[sq];
     if (!piece || colorOf(piece) !== us || !VALUABLE.has(typeOf(piece))) continue;
@@ -258,8 +257,71 @@ export function immediateMaterialLossRisk(position, move) {
   return risk;
 }
 
+function bestCaptureGainAt(position, square) {
+  let best = -Infinity;
+  for (const capture of position.legalMoves({ capturesOnly: true })) {
+    if (capture.to !== square || !(capture.flags & FLAGS.CAPTURE)) continue;
+    best = Math.max(best, staticExchangeEval(position, capture));
+  }
+  return best;
+}
+
+function threatCanBeNeutralized(position, attackerSquare) {
+  // If the newly advanced/forking piece can simply be removed, there is no
+  // trap. Legal SEE handles pins and x-rays rather than guessing geometrically.
+  for (const capture of position.legalMoves({ capturesOnly: true })) {
+    if (capture.to !== attackerSquare || !(capture.flags & FLAGS.CAPTURE)) continue;
+    if (staticExchangeEval(position, capture) >= -40) return true;
+  }
+  return false;
+}
+
+function valuablePieceHasSafeEscape(position, square) {
+  const piece = position.board[square];
+  if (!piece) return true;
+  const value = pieceValue(piece);
+  for (const escape of position.legalMoves()) {
+    if (escape.from !== square) continue;
+    const next = position.makeMove(escape);
+    const recaptureGain = bestCaptureGainAt(next, escape.to);
+    // A move that cannot be profitably met by taking the escaping piece is a
+    // real exit. For a rook/queen demand a correspondingly larger clean gain.
+    const losingThreshold = Math.min(420, Math.max(180, value - 100));
+    if (!Number.isFinite(recaptureGain) || recaptureGain < losingThreshold) return true;
+  }
+  return false;
+}
+
+function quietTrapRisk(position, move) {
+  const after = position.makeMove(move);
+  const us = position.turn;
+  const them = opposite(us);
+  let risk = 0;
+
+  // This is root-only and only examines opponent quiet threats. It catches the
+  // move *before* a piece is doomed, e.g. 5.f4? ...b5 trapping Na4, rather than
+  // blaming the next move when every knight retreat already loses material.
+  for (const reply of after.legalMoves()) {
+    if (reply.flags & FLAGS.CAPTURE || reply.promotion) continue;
+    if (!isForcingQuietThreat(after, reply)) continue;
+    const afterReply = after.makeMove(reply);
+    if (afterReply.isInCheck()) continue; // checks are already handled by core search
+    if (threatCanBeNeutralized(afterReply, reply.to)) continue;
+
+    for (let sq = 0; sq < 64; sq++) {
+      const target = afterReply.board[sq];
+      if (!target || colorOf(target) !== us || !VALUABLE.has(typeOf(target))) continue;
+      if (after.isSquareAttacked(sq, them) || !afterReply.isSquareAttacked(sq, them)) continue;
+      if (valuablePieceHasSafeEscape(afterReply, sq)) continue;
+      const value = pieceValue(target);
+      risk = Math.max(risk, 620 + Math.min(300, Math.max(0, value - 300)));
+    }
+  }
+  return risk;
+}
+
 export function rootSafetyRisk(position, move) {
-  return Math.max(rootTacticalRisk(position, move), immediateMaterialLossRisk(position, move));
+  return Math.max(rootTacticalRisk(position, move), immediateMaterialLossRisk(position, move), quietTrapRisk(position, move));
 }
 
 export function isForcingQuietThreat(position, move) {
