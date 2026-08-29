@@ -56,13 +56,24 @@ export class ChessGame {
     return this.timeline.slice(0, this.cursor + 1).filter(x => repetitionKey(x.position) === key).length;
   }
 
-  wouldCauseThreefold(move) {
+  wouldCauseRepetition(move, existingOccurrences = 1) {
     if (!move) return false;
     const legal = this.position.legalMoves().find(m => m.from === move.from && m.to === move.to && (m.promotion || null) === (move.promotion || null));
     if (!legal) return false;
-    // repetitionCount() examines the existing timeline. If the resulting position
-    // has already appeared twice, making this move would create occurrence #3.
-    return this.repetitionCount(this.position.makeMove(legal)) >= 2;
+    return this.repetitionCount(this.position.makeMove(legal)) >= existingOccurrences;
+  }
+
+  wouldCauseTwofold(move) {
+    // If the resulting position has appeared once already, this move cycles
+    // back to it for occurrence #2. It is not a draw yet, but it is a useful
+    // progress signal when Vanta is already better.
+    return this.wouldCauseRepetition(move, 1);
+  }
+
+  wouldCauseThreefold(move) {
+    // If the resulting position has already appeared twice, making this move
+    // creates occurrence #3 and therefore a claimable repetition draw.
+    return this.wouldCauseRepetition(move, 2);
   }
 
   repetitionDrawMoves() {
