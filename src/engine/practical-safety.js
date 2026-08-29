@@ -3,27 +3,23 @@ import { colorOf, typeOf, opposite } from '../chess/constants.js';
 import { staticExchangeEval } from './tactics.js';
 
 const PROTECTED_TYPES = new Set(['n', 'b', 'r', 'q']);
+const MOVED_LOSS_FLOOR = Object.freeze({ n: 260, b: 260, r: 420, q: 650 });
 export const AVOIDABLE_LOSS_FLOOR = 110;
+
+function hasImmediateMate(position) {
+  for (const move of position.legalMoves()) {
+    const next = position.makeMove(move);
+    if (next.isInCheck() && next.legalMoves().length === 0) return true;
+  }
+  return false;
+}
 
 /**
  * Measure the net material Vanta leaves on the table when it plays a move but
  * ignores one of its pieces that was already under attack.
  *
- * The old root seatbelt intentionally tolerated small negative SEE values so
- * speculative sacrifices remained possible. The August 29 rapid loss exposed
- * a hole in that policy: after ...b5, 6.c3 allowed ...bxa4 and a later Qxa4,
- * a clean knight-for-pawn loss of roughly 2.2 pawns. That sits below the old
- * 2.4-pawn abandonment threshold, so the move could pass as practically safe.
- * A second loss showed the same family of error with Qxg7: Vanta pocketed a
- * pawn while leaving Nb5 to ...axb5. After crediting both pawn gains, the net
- * immediate loss is still about 1.2 pawns, so the root floor is deliberately
- * low enough to catch that avoidable trade too.
- *
- * This helper is narrower than a generic sacrifice veto. It only considers a
- * piece that was attacked before our move and stayed on the same square. A
- * checking move is exempt so a real forcing zwischenzug remains search-led.
- * Captures receive credit for their legal SEE gain before the ignored loss is
- * judged.
+ * This deliberately remains narrow. It catches avoidable abandonment without
+ * turning every speculative sacrifice into a hard ban.
  */
 export function ignoredAttackedPieceLoss(position, move, seeMemo = new Map()) {
   if (!move) return 0;
@@ -31,8 +27,8 @@ export function ignoredAttackedPieceLoss(position, move, seeMemo = new Map()) {
   const enemy = opposite(us);
   const after = position.makeMove(move);
 
-  // position.makeMove() flips the side to move, so this means our move checks
-  // the opponent. Let objective search resolve genuine forcing continuations.
+  // A checking zwischenzug may intentionally postpone saving another piece.
+  // Newly hanging the piece that actually moved is handled separately below.
   if (after.isInCheck()) return 0;
 
   const replies = after.legalMoves({ capturesOnly: true });
@@ -64,11 +60,49 @@ export function ignoredAttackedPieceLoss(position, move, seeMemo = new Map()) {
 }
 
 /**
- * Exclude only clearly avoidable "ignore the attacked piece" moves at root.
- * If every available move trips the rule, return no automatic exclusions and
- * let normal search solve the forced position. This matters in fork/triage
- * positions where one piece is already doomed: Vanta must remain free to grab
- * material or create counterplay before accepting the unavoidable loss.
+ * Catch a different family of blunder: moving a valuable piece onto a square
+ * where the opponent can simply take it. The first August seatbelt only
+ * watched pieces that were attacked before our move, so a checking queen move
+ * such as ...Qxb2+ could be considered forcing even when Kxb2 was legal.
+ *
+ * Checks are NOT exempt here. If the opponent can answer the check by taking
+ * the moved piece, that reply is exactly what must be seen. We only waive the
+ * loss when accepting the sacrifice gives Vanta an immediate forced mate.
+ */
+export function movedPieceCaptureLoss(position, move, seeMemo = new Map()) {
+  if (!move || !PROTECTED_TYPES.has(typeOf(move.piece))) return 0;
+  const after = position.makeMove(move);
+
+  // Never suppress a move that is already checkmate.
+  if (after.isInCheck() && after.legalMoves().length === 0) return 0;
+
+  let rootGain = 0;
+  if ((move.flags & FLAGS.CAPTURE) || move.promotion) {
+    rootGain = Math.max(0, staticExchangeEval(position, move, seeMemo));
+  }
+
+  let worstNetLoss = 0;
+  const replies = after.legalMoves({ capturesOnly: true });
+  for (const reply of replies) {
+    if (reply.to !== move.to || !(reply.flags & FLAGS.CAPTURE)) continue;
+    const afterReply = after.makeMove(reply);
+
+    // Preserve simple, sound mating sacrifices. Longer combinations remain
+    // search-led, but a naked queen/rook donation no longer gets a free pass
+    // merely because the move gave check.
+    if (hasImmediateMate(afterReply)) continue;
+
+    const opponentGain = staticExchangeEval(after, reply, seeMemo);
+    worstNetLoss = Math.max(worstNetLoss, opponentGain - rootGain);
+  }
+
+  return Math.max(0, Math.round(worstNetLoss));
+}
+
+/**
+ * Exclude clearly avoidable root blunders before iterative deepening. If every
+ * move is unsafe, exclusions are disabled so forced-loss positions remain
+ * search-authoritative.
  */
 export function practicalSafetyExclusions(position, options = {}) {
   if (position.isInCheck()) return [];
@@ -83,20 +117,28 @@ export function practicalSafetyExclusions(position, options = {}) {
   let safeCount = 0;
 
   for (const move of legal) {
-    const loss = ignoredAttackedPieceLoss(position, move, seeMemo);
-    if (loss >= floor) unsafe.push({ uci: moveToUci(move), loss });
-    else safeCount++;
+    const ignoredLoss = ignoredAttackedPieceLoss(position, move, seeMemo);
+    const movedLoss = movedPieceCaptureLoss(position, move, seeMemo);
+    const movedFloor = MOVED_LOSS_FLOOR[typeOf(move.piece)] ?? floor;
+    const ignoredUnsafe = ignoredLoss >= floor;
+    const movedUnsafe = movedLoss >= movedFloor;
+
+    if (ignoredUnsafe || movedUnsafe) {
+      unsafe.push({
+        uci: moveToUci(move),
+        loss: Math.max(ignoredLoss, movedLoss),
+        reason: movedUnsafe ? 'moved-piece-capture' : 'ignored-attacked-piece',
+      });
+    } else {
+      safeCount++;
+    }
   }
 
   if (!safeCount) return [];
   return unsafe;
 }
 
-/**
- * Search through the same SearchEngine, but remove avoidable root blunders
- * before iterative deepening. This is deliberately a root policy, not a leaf
- * evaluation term: deeper speculative sacrifices remain completely available.
- */
+/** Search with the practical root seatbelt applied. */
 export function searchWithPracticalSafety(engine, position, options = {}) {
   const automatic = practicalSafetyExclusions(position, options);
   if (!automatic.length) {
