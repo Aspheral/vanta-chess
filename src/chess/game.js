@@ -56,6 +56,13 @@ export class ChessGame {
     return this.timeline.slice(0, this.cursor + 1).filter(x => repetitionKey(x.position) === key).length;
   }
 
+  wouldRepeatPosition(move) {
+    if (!move) return false;
+    const legal = this.position.legalMoves().find(m => m.from === move.from && m.to === move.to && (m.promotion || null) === (move.promotion || null));
+    if (!legal) return false;
+    return this.repetitionCount(this.position.makeMove(legal)) >= 1;
+  }
+
   wouldCauseThreefold(move) {
     if (!move) return false;
     const legal = this.position.legalMoves().find(m => m.from === move.from && m.to === move.to && (m.promotion || null) === (move.promotion || null));

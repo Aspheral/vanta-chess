@@ -17,6 +17,19 @@ test('materially ahead side excludes an avoidable move that would create threefo
   assert.ok(repetitionExclusions(game, 0).includes('g8f6'));
 });
 
+test('materially ahead side prefers progress before a cycle becomes threefold', () => {
+  const game = new ChessGame('r3k3/8/5n2/8/8/5N2/8/4K3 w - - 0 1');
+  for (const uci of ['f3g1','f6g8','g1f3']) game.playUci(uci);
+
+  assert.equal(game.position.turn, 'b');
+  const repeat = game.position.moveFromUci('g8f6');
+  assert.ok(repeat);
+  assert.equal(game.wouldRepeatPosition(repeat), true);
+  assert.equal(game.wouldCauseThreefold(repeat), false);
+  assert.equal(shouldRejectRepetitionMove(game, repeat, 0), true);
+  assert.ok(repetitionExclusions(game, 0).includes('g8f6'));
+});
+
 test('equal-material but winning side excludes a threefold move from objective evaluation', () => {
   const game = new ChessGame();
   for (const uci of ['g1f3','g8f6','f3g1','f6g8','g1f3','g8f6','f3g1']) game.playUci(uci);

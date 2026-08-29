@@ -6,6 +6,11 @@ import {
   staticExchangeEval, rootTacticalRisk, cheapVolatility, positionCriticality,
   hasNearPromotion, allocateRapidTime,
 } from './tactics.js';
+import {
+  strategicEvaluation, strategicMoveBonus, forcingQuietThreatScore,
+  isEndgameCriticalMove, endgamePhase,
+} from './strategy.js';
+import { hangingPieceEmergencyRisk } from './safety.js';
 
 const INF = 1_000_000;
 const MATE_TT_BOUND = MATE_SCORE - 1000;
@@ -48,6 +53,9 @@ export class SearchEngine {
     const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 15)}`;
     const cached = this.evalCache.get(key);
     if (cached !== undefined) return cached;
+    // Keep the proven evaluator on the hot path. The new endgame specialist is
+    // applied at the root, where it can steer practical choices without making
+    // every leaf several times more expensive.
     const score = evaluate(position, perspective);
     this.evalCache.set(key, score);
     if (this.evalCache.size > 40000) {
@@ -198,6 +206,12 @@ export class SearchEngine {
     let bestPv = [];
     let complete = true;
 
+    // Endgame knowledge is deliberately root-selective. Calculate the common
+    // baseline once per iteration, then give moves a bounded strategic delta.
+    const phase = endgamePhase(position);
+    const rootEndgame = phase >= 0.35;
+    const strategicBefore = rootEndgame ? strategicEvaluation(position, position.turn) : 0;
+
     for (const move of moves) {
       if (this.timeUp()) { complete = false; break; }
       const next = position.makeMove(move);
@@ -221,11 +235,18 @@ export class SearchEngine {
 
       if (this.timeUp()) { complete = false; break; }
 
+      const rawStrategic = strategicMoveBonus(position, move);
+      // Repeated-knight discipline should not make one silly retreat look much
+      // worse than another and accidentally resurrect an old aggressive hop.
+      const openingStrategic = typeOf(move.piece) === 'n' ? Math.max(-35, rawStrategic) : rawStrategic;
+      const endgameStrategic = rootEndgame
+        ? Math.max(-95, Math.min(95, Math.round((strategicEvaluation(next, position.turn) - strategicBefore) * 0.9)))
+        : 0;
       const line = {
         move,
         score,
         pv: [move, ...pv],
-        personality: personalityMoveBonus(position, move),
+        personality: personalityMoveBonus(position, move) + openingStrategic + endgameStrategic,
         exact,
       };
       lines.push(line);
@@ -264,6 +285,7 @@ export class SearchEngine {
     let priorOccurrences = 0;
     for (const hash of pathHashes) if (hash === position.hash) priorOccurrences++;
     if (priorOccurrences >= 2) return this.repetitionUtility(position);
+    if (priorOccurrences >= 1 && depth <= 2 && position.halfmove >= 4) return this.cycleUtility(position);
     if (position.halfmove >= 100) return 0;
 
     const inCheck = position.isInCheck();
@@ -291,8 +313,6 @@ export class SearchEngine {
     let bestScore = -INF;
     let bestMove = null;
     let bestPv = [];
-    // Tactical classification is only needed at depths where LMR can occur.
-    // Avoid paying for full board scans at shallow nodes.
     const volatile = depth >= 3 && (cheapVolatility(position) >= 52 || hasNearPromotion(position));
 
     for (let i = 0; i < moves.length; i++) {
@@ -301,12 +321,18 @@ export class SearchEngine {
       const next = position.makeMove(move);
       const quiet = !(move.flags & FLAGS.CAPTURE) && !move.promotion;
       const givesCheck = depth >= 3 && next.isInCheck();
+      // Only inspect quiet tactical geometry near the root and only when LMR
+      // could actually reduce the move. This preserves the concept at a tiny cost.
+      const quietThreat = quiet && depth >= 3 && i >= 5 && ply <= 1
+        && forcingQuietThreatScore(position, move) >= 100;
+      const endgameCritical = depth >= 2 && ply <= 1 && isEndgameCriticalMove(position, move);
       let reduction = 0;
-      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !volatile) {
+      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !quietThreat && !endgameCritical && !volatile) {
         reduction = depth >= 5 && i >= 9 ? 2 : 1;
       }
 
-      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0));
+      const extension = endgameCritical && depth <= 4 ? 1 : 0;
+      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0) + extension);
       const reducedDepth = Math.max(0, fullDepth - reduction);
       let childPv = [];
       let score;
@@ -392,9 +418,8 @@ export class SearchEngine {
 
     if (qply > 8 || ply > 18 || this.timeUp()) return inCheck ? alpha : Math.max(alpha, stand);
 
-    // Quiet checks are useful in volatile horizon nodes, but searching them at
-    // every q-node was a large speed regression. Captures and all promotions
-    // remain present unconditionally.
+    // Keep qsearch lean. Immediate quiet forks are already checked at the root
+    // safety layer, while deeper quiet threats are protected from LMR near root.
     if (!inCheck && qply === 0 && cheapVolatility(position) >= 48) {
       const existing = new Set(moves.map(moveToUci));
       for (const move of position.legalMoves()) {
@@ -411,8 +436,6 @@ export class SearchEngine {
       const givesCheck = next.isInCheck();
       if (!inCheck && (move.flags & FLAGS.CAPTURE) && !move.promotion && !givesCheck) {
         const victim = PIECE_VALUES[typeOf(move.captured)] || 0;
-        // Full legal SEE is authoritative in qsearch, where pruning an exchange
-        // incorrectly is dangerous and the candidate set is already tactical.
         const see = staticExchangeEval(position, move, this.seeMemo);
         if (see < -120) continue;
         if (stand + Math.max(victim, see) + 95 < alpha) continue;
@@ -435,15 +458,18 @@ export class SearchEngine {
         const victim = PIECE_VALUES[typeOf(move.captured)] || 0;
         const attacker = PIECE_VALUES[typeOf(move.piece)] || 0;
         score += 80_000 + victim * 12 - attacker;
-        // Legal SEE is deliberately selective here. Root ordering benefits from
-        // exact exchange information; doing it at every interior node erased a
-        // full ply of practical depth.
         if (ply === 0) {
           const see = staticExchangeEval(position, move, this.seeMemo);
           score += Math.max(-12000, Math.min(30000, see * 30));
         }
       }
       if (ply <= 1 && !(move.flags & FLAGS.CAPTURE) && !move.promotion && position.makeMove(move).isInCheck()) score += 62_000;
+      // Root ordering gets quiet tactical awareness for free compared with doing
+      // the same geometry at every interior node.
+      if (ply === 0 && !(move.flags & FLAGS.CAPTURE) && !move.promotion) {
+        const threat = forcingQuietThreatScore(position, move);
+        if (threat >= 100) score += 38_000 + Math.min(20_000, threat * 60);
+      }
       if (killers[0] === u) score += 18_000;
       else if (killers[1] === u) score += 14_000;
       score += Math.min(30000, this.history.get(u) || 0);
@@ -453,14 +479,46 @@ export class SearchEngine {
     return scored.map(x => x.move);
   }
 
+  combinedRootRisk(position, move) {
+    return Math.max(
+      rootTacticalRisk(position, move, this.seeMemo),
+      hangingPieceEmergencyRisk(position, move, this.seeMemo),
+    );
+  }
+
   personalitySelect(position, lines, bestFallback) {
     if (!lines?.length) {
+      let move = bestFallback.bestMove;
+      let risk = move ? this.combinedRootRisk(position, move) : 0;
+
+      if (move && hangingPieceEmergencyRisk(position, move, this.seeMemo) >= 650) {
+        const safe = position.legalMoves()
+          .map(candidate => ({
+            move: candidate,
+            emergency: hangingPieceEmergencyRisk(position, candidate, this.seeMemo),
+            score: -this.staticEval(position.makeMove(candidate)) + strategicMoveBonus(position, candidate),
+          }))
+          .filter(candidate => candidate.emergency < 300)
+          .sort((a, b) => b.score - a.score)[0];
+        if (safe) {
+          move = safe.move;
+          risk = this.combinedRootRisk(position, move);
+          return {
+            move,
+            score: safe.score,
+            objectiveScore: safe.score,
+            pv: [move],
+            risk,
+          };
+        }
+      }
+
       return {
-        move: bestFallback.bestMove,
+        move,
         score: bestFallback.score,
         objectiveScore: bestFallback.score,
         pv: bestFallback.pv,
-        risk: bestFallback.bestMove ? rootTacticalRisk(position, bestFallback.bestMove, this.seeMemo) : 0,
+        risk,
       };
     }
 
@@ -473,7 +531,10 @@ export class SearchEngine {
       return { move: forced.move, score: bestScore, objectiveScore: bestScore, pv: forced.pv, risk: 0 };
     }
 
-    const window = this.config.selectionWindow ?? 32;
+    // Give the endgame specialist enough room to choose an active king or
+    // correct passer plan when baseline terms are nearly indifferent.
+    const phase = endgamePhase(position);
+    const window = Math.max(this.config.selectionWindow ?? 32, phase >= 0.55 ? 95 : phase >= 0.35 ? 55 : 0);
     const eligible = pool.filter(line => line.score >= bestScore - window);
     const danger = cheapVolatility(position);
     const scored = eligible.map(line => {
@@ -481,10 +542,7 @@ export class SearchEngine {
         ? pseudoNoise(position.hash, line.move, this.config.evalNoise)
         : 0;
       const personality = danger >= 62 ? 0 : (line.personality || 0);
-      const risk = rootTacticalRisk(position, line.move, this.seeMemo);
-      // Root risk is a veto/verification signal, not a second evaluation
-      // function. Keep it strong for mate/rook/queen loss but modest for a
-      // potentially sound minor-piece sacrifice that normal search likes.
+      const risk = this.combinedRootRisk(position, line.move);
       const riskPenalty = risk >= MATE_RISK
         ? 1_000_000
         : risk >= 700
@@ -498,13 +556,17 @@ export class SearchEngine {
 
     let pick = scored[0] || pool[0];
 
-    // A short forced rook/queen loss can widen the normal personality window;
-    // smaller tactical concessions remain search-authoritative so sacrifices
-    // are not mechanically banned.
+    if (pick?.risk >= 650) {
+      const safeCompetitive = scored
+        .filter(line => line.risk < 300 && line.score >= bestScore - 140)
+        .sort((a, b) => b.composite - a.composite);
+      if (safeCompetitive.length) pick = safeCompetitive[0];
+    }
+
     if (pick?.risk >= 500) {
       const rescuePool = pool.filter(line => line.score >= bestScore - 120).map(line => ({
         ...line,
-        risk: rootTacticalRisk(position, line.move, this.seeMemo),
+        risk: this.combinedRootRisk(position, line.move),
       }));
       const safer = rescuePool
         .filter(line => line.risk + 220 < pick.risk)
@@ -519,6 +581,14 @@ export class SearchEngine {
       pv: pick.pv,
       risk: pick.risk || 0,
     };
+  }
+
+  cycleUtility(position) {
+    const staticScore = this.staticEval(position);
+    const material = materialBalance(position, position.turn);
+    if (material >= 180 || staticScore >= 120) return -110;
+    if (material <= -180 || staticScore <= -120) return 32;
+    return -12;
   }
 
   repetitionUtility(position) {
