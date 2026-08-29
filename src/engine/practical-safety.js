@@ -3,7 +3,13 @@ import { colorOf, typeOf, opposite } from '../chess/constants.js';
 import { staticExchangeEval } from './tactics.js';
 
 const PROTECTED_TYPES = new Set(['n', 'b', 'r', 'q']);
-const MOVED_LOSS_FLOOR = Object.freeze({ n: 260, b: 260, r: 420, q: 650 });
+// A moved major-piece loss needs a much tighter floor than a full-piece hang.
+// In the Tjkhan77 loss, 16...Qd6 allowed 17.Rxd6 Rxd6. Legal SEE values that
+// as roughly a 400 cp net loss (queen for rook), which slipped below the old
+// 650 cp queen threshold even though it is an elementary practical blunder.
+// Keep enough room for search-led exchange sacrifices, but never permit a clean
+// queen-for-rook concession simply because the queen can be recaptured later.
+const MOVED_LOSS_FLOOR = Object.freeze({ n: 260, b: 260, r: 360, q: 300 });
 export const AVOIDABLE_LOSS_FLOOR = 110;
 
 function hasImmediateMate(position) {
