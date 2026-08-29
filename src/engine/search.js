@@ -8,7 +8,6 @@ import {
 } from './tactics.js';
 import {
   strategicEvaluation, strategicMoveBonus, quietThreatScore, quietThreatMoves,
-  trappedPiecePenalty,
 } from './strategy.js';
 
 const INF = 1_000_000;
@@ -432,18 +431,7 @@ export class SearchEngine {
         if (see < -120) continue;
         if (stand + Math.max(victim, see) + 95 < alpha) continue;
       }
-
-      const threatScore = !inCheck && qply === 0 && !(move.flags & FLAGS.CAPTURE) && !move.promotion
-        ? quietThreatScore(position, move)
-        : 0;
-      let trapGain = 0;
-      if (threatScore >= 58) {
-        const defender = next.turn;
-        trapGain = Math.max(0, trappedPiecePenalty(next, defender) - trappedPiecePenalty(position, defender));
-      }
-
-      let score = -this.quiescence(next, -beta, -alpha, ply + 1, qply + 1);
-      if (trapGain > 0) score += Math.min(160, Math.round(trapGain * 0.75));
+      const score = -this.quiescence(next, -beta, -alpha, ply + 1, qply + 1);
       if (score >= beta) return beta;
       if (score > alpha) alpha = score;
     }
