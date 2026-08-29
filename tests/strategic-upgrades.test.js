@@ -9,7 +9,8 @@ import {
   openingMoveEconomyBonus, applyOpeningMoveEconomyGate,
 } from '../src/engine/opening-economy.js';
 import {
-  endgameSpecialistBreakdown, endgameSpecialistScore, endgameWeight, endgameVolatility,
+  endgameSpecialistBreakdown, endgameSpecialistScore, endgameSpecialistMoveBonus,
+  endgameWeight, endgameVolatility,
 } from '../src/engine/endgame-specialist.js';
 
 function playUci(moves) {
@@ -99,6 +100,16 @@ test('endgame specialist activates in low material and rewards active kings',()=
   assert.ok(endgameSpecialistScore(central,'w')>endgameSpecialistScore(corner,'w'));
 });
 
+test('root-only endgame specialist prefers a materially equivalent king step toward the action',()=>{
+  const p=Position.fromFEN('7k/8/8/8/8/8/4P3/K7 w - - 0 1');
+  const active=p.moveFromUci('a1b2');
+  const passive=p.moveFromUci('a1a2');
+  assert.ok(active&&passive);
+  const activeBonus=endgameSpecialistMoveBonus(p,active);
+  const passiveBonus=endgameSpecialistMoveBonus(p,passive);
+  assert.ok(activeBonus>passiveBonus,`active ${activeBonus}, passive ${passiveBonus}`);
+});
+
 test('endgame specialist rewards a rook correctly placed behind its passed pawn',()=>{
   const behind=Position.fromFEN('7k/8/4P3/8/3K4/8/8/4R3 w - - 0 1');
   const sideways=Position.fromFEN('7k/8/4P3/8/3K4/8/8/R7 w - - 0 1');
@@ -107,7 +118,7 @@ test('endgame specialist rewards a rook correctly placed behind its passed pawn'
   assert.ok(a.passers>=b.passers+15,`${JSON.stringify({behind:a,sideways:b})}`);
 });
 
-test('advanced passed-pawn endings are marked volatile for search selectivity without changing clock policy',()=>{
+test('advanced passed-pawn endings are marked volatile for diagnostics without changing clock policy',()=>{
   const p=Position.fromFEN('7k/8/4P3/8/4K3/8/8/8 w - - 0 1');
   assert.ok(endgameVolatility(p)>=50,`endgame volatility ${endgameVolatility(p)}`);
 });
