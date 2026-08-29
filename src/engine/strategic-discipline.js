@@ -1,5 +1,6 @@
 import {
   WHITE, BLACK, PIECE_VALUES, colorOf, typeOf, rowCol, opposite, inBounds,
+  KNIGHT_DELTAS, KING_DELTAS, BISHOP_DIRS, ROOK_DIRS,
 } from '../chess/constants.js';
 import { FLAGS } from '../chess/position.js';
 import { staticExchangeEval } from './tactics.js';
@@ -34,6 +35,43 @@ function squareDistance(a, b) {
 
 function centerDistance(square) {
   return Math.min(...[27, 28, 35, 36].map(center => squareDistance(square, center)));
+}
+
+function pieceAttacksSquare(position, from, target) {
+  const piece = position.board[from];
+  if (!piece) return false;
+  const color = colorOf(piece);
+  const type = typeOf(piece);
+  const [fr, fc] = rowCol(from);
+  const [tr, tc] = rowCol(target);
+  const dr = tr - fr;
+  const dc = tc - fc;
+
+  if (type === 'p') {
+    const step = color === WHITE ? -1 : 1;
+    return dr === step && Math.abs(dc) === 1;
+  }
+  if (type === 'n') return KNIGHT_DELTAS.some(([r, c]) => r === dr && c === dc);
+  if (type === 'k') return KING_DELTAS.some(([r, c]) => r === dr && c === dc);
+
+  const dirs = type === 'b' ? BISHOP_DIRS : type === 'r' ? ROOK_DIRS : [...BISHOP_DIRS, ...ROOK_DIRS];
+  for (const [stepR, stepC] of dirs) {
+    if (stepR === 0 && dr !== 0) continue;
+    if (stepC === 0 && dc !== 0) continue;
+    if (stepR !== 0 && stepC !== 0 && Math.abs(dr) !== Math.abs(dc)) continue;
+    if (dr !== 0 && Math.sign(dr) !== Math.sign(stepR)) continue;
+    if (dc !== 0 && Math.sign(dc) !== Math.sign(stepC)) continue;
+    let r = fr + stepR;
+    let c = fc + stepC;
+    while (inBounds(r, c)) {
+      const sq = r * 8 + c;
+      if (sq === target) return true;
+      if (position.board[sq]) break;
+      r += stepR;
+      c += stepC;
+    }
+  }
+  return false;
 }
 
 function minorStats(position, color) {
@@ -211,15 +249,17 @@ function openingPositionForColor(position, color) {
   return score;
 }
 
-export function strategicPositionScore(position, perspective = position.turn) {
-  let score = openingPositionForColor(position, perspective) - openingPositionForColor(position, opposite(perspective));
+export function endgameStrategicScore(position, perspective = position.turn) {
   const phase = endgamePhase(position);
-  if (phase.weight > 0) {
-    const own = kingEndgameScore(position, perspective) + passedPawnEndgameScore(position, perspective);
-    const enemy = kingEndgameScore(position, opposite(perspective)) + passedPawnEndgameScore(position, opposite(perspective));
-    score += (own - enemy) * phase.weight;
-  }
-  return Math.round(score);
+  if (phase.weight <= 0) return 0;
+  const own = kingEndgameScore(position, perspective) + passedPawnEndgameScore(position, perspective);
+  const enemy = kingEndgameScore(position, opposite(perspective)) + passedPawnEndgameScore(position, opposite(perspective));
+  return Math.round((own - enemy) * phase.weight);
+}
+
+export function strategicPositionScore(position, perspective = position.turn) {
+  const opening = openingPositionForColor(position, perspective) - openingPositionForColor(position, opposite(perspective));
+  return Math.round(opening + endgameStrategicScore(position, perspective));
 }
 
 export function openingMoveDiscipline(position, move) {
@@ -285,17 +325,20 @@ function moveApproachesCriticalPawn(position, move, color) {
   return after < before;
 }
 
-export function isEndgameCriticalMove(position, move) {
-  if (!move) return false;
+export function isEndgamePassedPawnPush(position, move) {
+  if (!move || typeOf(move.piece) !== 'p' || move.promotion) return false;
   const phase = endgamePhase(position);
   if (phase.weight < 0.7) return false;
-  const type = typeOf(move.piece);
-  if (type === 'p') {
-    const color = colorOf(move.piece);
-    return pawnProgress(move.to, color) >= 3 && isPassedPawn(position.makeMove(move), move.to, color);
-  }
-  if (type === 'k' && phase.deep) return moveApproachesCriticalPawn(position, move, position.turn);
-  return false;
+  const color = colorOf(move.piece);
+  return pawnProgress(move.to, color) >= 3 && isPassedPawn(position.makeMove(move), move.to, color);
+}
+
+export function isEndgameCriticalMove(position, move) {
+  if (!move) return false;
+  if (isEndgamePassedPawnPush(position, move)) return true;
+  const phase = endgamePhase(position);
+  if (phase.weight < 0.7) return false;
+  return typeOf(move.piece) === 'k' && phase.deep && moveApproachesCriticalPawn(position, move, position.turn);
 }
 
 export function rootImmediateMaterialLoss(position, move, memo = new Map()) {
@@ -316,6 +359,22 @@ export function quietTacticalThreatScore(position, move) {
   const after = position.makeMove(move);
   if (after.isInCheck()) return 0;
 
+  // The piece that just moved can itself create a quiet fork even when one of
+  // its targets was already attacked by a different piece. This is the f2-f3
+  // pattern from the rapid game: the pawn on f3 directly attacks both e4 and g4.
+  const directTargets = [];
+  for (let sq = 0; sq < 64; sq++) {
+    const piece = after.board[sq];
+    if (!piece || colorOf(piece) !== enemy || !['n', 'b', 'r', 'q'].includes(typeOf(piece))) continue;
+    if (pieceAttacksSquare(after, move.to, sq)) directTargets.push(PIECE_VALUES[typeOf(piece)] || 0);
+  }
+  directTargets.sort((a, b) => b - a);
+  if (directTargets.length >= 2) {
+    return 440 + Math.min(260, Math.round((directTargets[0] + directTargets[1] - 600) * 0.35));
+  }
+
+  // Also catch discovered attacks where the moving piece is only the door that
+  // opens a rook/bishop/queen line.
   const newlyAttacked = [];
   for (let sq = 0; sq < 64; sq++) {
     const piece = after.board[sq];
@@ -323,21 +382,18 @@ export function quietTacticalThreatScore(position, move) {
     const type = typeOf(piece);
     if (!['n', 'b', 'r', 'q'].includes(type)) continue;
     if (!after.isSquareAttacked(sq, us) || position.isSquareAttacked(sq, us)) continue;
-    const value = PIECE_VALUES[type] || 0;
-    newlyAttacked.push({ value, sq });
+    newlyAttacked.push({ value: PIECE_VALUES[type] || 0, sq });
   }
 
   if (!newlyAttacked.length) return 0;
   newlyAttacked.sort((a, b) => b.value - a.value);
   if (newlyAttacked.length >= 2) {
-    return 440 + Math.min(260, Math.round((newlyAttacked[0].value + newlyAttacked[1].value - 600) * 0.35));
+    return 420 + Math.min(240, Math.round((newlyAttacked[0].value + newlyAttacked[1].value - 600) * 0.32));
   }
 
   const target = newlyAttacked[0];
   if (target.value >= PIECE_VALUES.q) return 390;
   if (target.value >= PIECE_VALUES.r) return 340;
-
-  const defenders = after.isSquareAttacked(target.sq, enemy);
-  if (!defenders && target.value >= PIECE_VALUES.n) return 310;
+  if (!after.isSquareAttacked(target.sq, enemy) && target.value >= PIECE_VALUES.n) return 310;
   return 0;
 }
