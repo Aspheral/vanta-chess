@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -62,7 +62,7 @@ jobs:
         env:
           STRESS_GAMES: '50'
           STRESS_SHARD: ${{ matrix.shard }}
-          STRESS_SHARDS: '5'
+          STRESS_SHARDS: '10'
           STRESS_ELO: '1650'
           STRESS_MOVE_MS: '650'
           STRESS_MAX_PLIES: '120'
@@ -105,6 +105,6 @@ jobs:
           name: stress-1650-report
           path: benchmarks/stress-1650.json
           if-no-files-found: error
-      - name: Enforce requested 50 percent score gate
+      - name: Enforce requested 50 percent literal win-rate gate
         run: |
-          node -e "const r=require('./benchmarks/stress-1650.json'); console.log('score',r.totals.scoreRate,'win',r.totals.winRate); if(r.totals.scoreRate < 0.5) process.exit(1)"
+          node -e "const r=require('./benchmarks/stress-1650.json'); console.log('score',r.totals.scoreRate,'win',r.totals.winRate); if(r.totals.winRate < 0.5) process.exit(1)"
