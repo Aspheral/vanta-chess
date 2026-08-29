@@ -179,9 +179,26 @@ export function endgameSpecialistScore(position, perspective = position.turn) {
 }
 
 /**
- * Search selectivity hint only. No clock policy is changed here. Advanced pawn
- * races and very low-material king endings should not be shaved by LMR as if
- * they were routine middlegame quiet moves.
+ * Root-only Endgame Specialist preference. Objective alpha-beta evaluation is
+ * deliberately left untouched. This lets close endgame choices favor active
+ * kings, correct blockades, supported passers, rook-behind-pawn technique and
+ * opposition without multiplying those heuristics through every search leaf.
+ */
+export function endgameSpecialistMoveBonus(position, move) {
+  if (!move) return 0;
+  const weight = endgameWeight(position);
+  if (weight < 0.55) return 0;
+  const us = position.turn;
+  const before = endgameSpecialistScore(position, us);
+  const after = endgameSpecialistScore(position.makeMove(move), us);
+  const delta = after - before;
+  const scale = weight >= 0.85 ? 0.46 : 0.34;
+  return clamp(Math.round(delta * scale), -32, 32);
+}
+
+/**
+ * Diagnostic/search-policy helper retained for focused tests and future tuning.
+ * It does not change clock allocation or the normal negamax hot path.
  */
 export function endgameVolatility(position) {
   const weight = endgameWeight(position);
@@ -198,10 +215,9 @@ export function endgameVolatility(position) {
 }
 
 /**
- * Extensions are deliberately narrow. Generic king moves are not extended,
- * because doing so can steal the shallow-search budget from concrete tactics.
- * The specialist only extends advanced passed-pawn races where one tempo can
- * literally become a queen.
+ * Diagnostic helper for advanced passed-pawn races. Existing tactics.js logic
+ * already protects these moves inside search, so the specialist does not add a
+ * second extension in the main negamax loop.
  */
 export function isEndgameCriticalMove(position, move) {
   if (!move || endgameWeight(position) < 0.6 || move.promotion) return false;
