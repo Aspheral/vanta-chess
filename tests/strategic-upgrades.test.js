@@ -22,18 +22,21 @@ function playUci(moves) {
   return position;
 }
 
-test('strict hanging-piece gate blocks the real c3 knight abandonment from the DevTheExpertBack game',()=>{
-  const p=playUci([
-    'g1f3','g8f6','b1c3','d7d5','f3e5','d5d4','c3a4','d8d6','f2f4','b7b5',
-  ]);
+// Same practical motif as the DevTheExpertBack game, isolated from the second
+// simultaneous knight threat in the original position. This tests the rule we
+// actually want: when a clean escape exists, Vanta may not ignore a pawn attack
+// and donate the knight for vague activity.
+const HANGING_KNIGHT=Position.fromFEN('4k3/8/8/1p6/N7/8/2P5/4K3 w - - 0 1');
+
+test('strict hanging-piece gate blocks an avoidable attacked-knight abandonment',()=>{
+  const p=HANGING_KNIGHT;
   const blunder=p.moveFromUci('c2c3');
   const rescue=p.moveFromUci('a4c5');
   assert.ok(blunder&&rescue);
   const exposure=hangingPieceExposure(p,blunder);
-  // ...bxa4 wins a knight for a pawn; legal SEE correctly prices the net
-  // material swing rather than the knight's full sticker value.
   assert.ok(exposure.loss>=180,`c3 exposure only ${JSON.stringify(exposure)}`);
   assert.equal(exposure.victimType,'n');
+  assert.equal(hangingPieceExposure(p,rescue).loss,0);
 
   const gated=strictHangingPieceGate(p,[
     {move:blunder,score:28,pv:[blunder],exact:true},
@@ -44,9 +47,7 @@ test('strict hanging-piece gate blocks the real c3 knight abandonment from the D
 });
 
 test('strict hanging-piece gate still permits a search-proven sacrifice',()=>{
-  const p=playUci([
-    'g1f3','g8f6','b1c3','d7d5','f3e5','d5d4','c3a4','d8d6','f2f4','b7b5',
-  ]);
+  const p=HANGING_KNIGHT;
   const risky=p.moveFromUci('c2c3');
   const safe=p.moveFromUci('a4c5');
   const gated=strictHangingPieceGate(p,[
@@ -72,6 +73,13 @@ test('opening move economy strongly prefers mobilizing a bishop over another kni
   ]);
   assert.equal(gated.lines.some(line=>moveToUci(line.move)==='f3e5'),false);
   assert.equal(gated.lines.some(line=>moveToUci(line.move)==='f1b5'),true);
+});
+
+test('opening move economy taxes the real Na4 knight tour before the later b5 attack',()=>{
+  const p=playUci(['g1f3','g8f6','b1c3','d7d5','f3e5','d5d4']);
+  const na4=p.moveFromUci('c3a4');
+  assert.ok(na4);
+  assert.ok(openingMoveEconomyBonus(p,na4)<=-30,`Na4 economy bonus ${openingMoveEconomyBonus(p,na4)}`);
 });
 
 test('opening move economy taxes repeated queen adventures while minors remain home',()=>{
@@ -104,11 +112,10 @@ test('advanced passed-pawn endings are marked volatile for search selectivity wi
   assert.ok(endgameVolatility(p)>=50,`endgame volatility ${endgameVolatility(p)}`);
 });
 
-test('search integration keeps a clean hanging-piece blunder out of the final choice',()=>{
-  const p=playUci([
-    'g1f3','g8f6','b1c3','d7d5','f3e5','d5d4','c3a4','d8d6','f2f4','b7b5',
-  ]);
+test('search integration keeps an avoidable hanging-piece blunder out of the final choice',()=>{
+  const p=HANGING_KNIGHT;
   const engine=new SearchEngine({maxDepth:3,moveTimeMs:900,nodeLimit:240000,selectionWindow:32,evalNoise:0});
   const result=engine.search(p,{moveTimeMs:900,maxDepth:3});
   assert.notEqual(moveToUci(result.move),'c2c3',`still abandoned the knight: ${JSON.stringify(result.candidates)}`);
+  assert.equal(hangingPieceExposure(p,result.move).loss,0,`selected exposed move ${moveToUci(result.move)}`);
 });
