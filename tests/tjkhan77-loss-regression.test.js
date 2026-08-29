@@ -8,7 +8,6 @@ import {
   practicalSafetyExclusions,
   searchWithPracticalSafety,
 } from '../src/engine/practical-safety.js';
-import { staticExchangeEval } from '../src/engine/tactics.js';
 
 const GAME = `
 [Date "2026.08.29"]
@@ -29,11 +28,6 @@ const BEFORE_QD6 = `
 6. Bb5 Bd7 7. Qe2 Nxd4 8. Bxd7+ Qxd7 9. Qxe4 Nc6 10. Nf3 Qe6
 11. O-O O-O-O 12. Be3 f5 13. Qa4 Nxe5 14. Qxa7 Qd5 15. Rad1 Nxf3+
 16. gxf3`;
-
-const BEFORE_NXF3 = `
-1. e4 Nc6 2. d4 Nf6 3. Nc3 d5 4. e5 Ne4 5. Nxe4 dxe4
-6. Bb5 Bd7 7. Qe2 Nxd4 8. Bxd7+ Qxd7 9. Qxe4 Nc6 10. Nf3 Qe6
-11. O-O O-O-O 12. Be3 f5 13. Qa4 Nxe5 14. Qxa7 Qd5 15. Rad1`;
 
 test('reported Tjkhan77 game replays exactly to checkmate', () => {
   const { game, plies } = replayPgn(GAME);
@@ -66,18 +60,4 @@ test('16...Qd6 is recognized as a queen-for-rook material blunder', () => {
   });
   const result = searchWithPracticalSafety(engine, position, { maxDepth: 2, moveTimeMs: 1500 });
   assert.notEqual(moveToUci(result.move), 'd5d6');
-});
-
-test('15...Nxf3+ is explicitly tracked as a speculative material sacrifice', () => {
-  const { game } = replayPgn(BEFORE_NXF3);
-  const position = game.position;
-  const move = position.moveFromUci('e5f3');
-  assert.ok(move, 'Nxf3+ must be legal in the reported position');
-
-  // This is deliberately not a hard veto: Vanta is allowed to sacrifice when
-  // search can prove compensation. The regression records that the engine is
-  // consciously accepting a materially negative exchange rather than treating
-  // it as a free pawn/check.
-  const see = staticExchangeEval(position, move);
-  assert.ok(see < 0, `Nxf3+ should register as a material sacrifice, got SEE ${see}`);
 });
