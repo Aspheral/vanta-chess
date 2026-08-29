@@ -22,7 +22,14 @@ test('recent DevTheExpertBack loss: Vanta sees that 5.f4 allows the quiet b5 kni
   assert.ok(f4);
   assert.ok(rootSafetyRisk(p,f4)>=560,`f4 trap risk ${rootSafetyRisk(p,f4)}`);
   const r=engine(900,4).search(p,{moveTimeMs:900,maxDepth:4});
-  assert.notEqual(moveToUci(r.move),'f2f4',JSON.stringify(r.candidates));
+  if(moveToUci(r.move)==='f2f4') {
+    const probe=engine(5000,2);
+    const root=probe.searchRoot(p,2,{});
+    const diagnostic=root.lines.map(line=>({
+      uci:moveToUci(line.move),score:line.score,risk:rootSafetyRisk(p,line.move),quality:rootStrategicAdjustment(p,line.move)
+    })).sort((a,b)=>b.score-a.score);
+    assert.fail(`still selected f4; root diagnostic ${JSON.stringify(diagnostic)}`);
+  }
 });
 
 test('recent danh loss: pawn hunting Qxg7 cannot outrank saving the attacked b5 knight',()=>{
