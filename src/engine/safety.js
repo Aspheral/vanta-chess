@@ -37,8 +37,11 @@ export function hangingPieceEmergencyRisk(position, move, seeMemo = new Map()) {
 
     const victim = PIECE_VALUES[typeOf(piece)] || 0;
     const base = victim >= PIECE_VALUES.r ? 760 : 650;
-    risk = Math.max(risk, base + Math.min(300, Math.max(0, bestGain - 160)));
+    // A fork can leave two pieces hanging at once. Using only the maximum hid
+    // the difference between "save one" and "ignore both", which recreated the
+    // 6...Nxe5 failure after f3. Add the independent emergencies instead.
+    risk += base + Math.min(300, Math.max(0, bestGain - 160));
   }
 
-  return Math.round(risk);
+  return Math.min(1800, Math.round(risk));
 }
