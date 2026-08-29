@@ -10,7 +10,8 @@ import { staticExchangeEval } from './tactics.js';
  *
  * This deliberately ignores forcing checks and pieces that move away. It is not
  * a blanket ban on sacrifices. Search may still sacrifice the endangered piece
- * itself, or play a forcing move, when concrete compensation exists.
+ * itself, play a forcing move, or accept the loss when every safer line is more
+ * than roughly a pawn worse objectively.
  */
 export function hangingPieceEmergencyRisk(position, move, seeMemo = new Map()) {
   if (!move) return 100000;
@@ -36,12 +37,14 @@ export function hangingPieceEmergencyRisk(position, move, seeMemo = new Map()) {
     if (bestGain < 160) continue;
 
     const victim = PIECE_VALUES[typeOf(piece)] || 0;
-    const base = victim >= PIECE_VALUES.r ? 760 : 650;
+    // This is a gate severity, not the literal material loss. A clean ignored
+    // minor is serious enough to widen the root rescue window decisively.
+    const base = victim >= PIECE_VALUES.r ? 1100 : 950;
     // A fork can leave two pieces hanging at once. Using only the maximum hid
     // the difference between "save one" and "ignore both", which recreated the
     // 6...Nxe5 failure after f3. Add the independent emergencies instead.
     risk += base + Math.min(300, Math.max(0, bestGain - 160));
   }
 
-  return Math.min(1800, Math.round(risk));
+  return Math.min(2200, Math.round(risk));
 }
