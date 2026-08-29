@@ -534,9 +534,6 @@ export class SearchEngine {
       }
     }
 
-    // When already down material, speculative exchanges need a higher burden
-    // of proof. A high-risk move may still be played if its objective advantage
-    // over every safer line is larger than the material being risked.
     const rootMaterial = materialBalance(position, position.turn);
     if (rootMaterial <= -150 && pick && (pick.risk >= 300 || pick.materialLoss >= 180)) {
       const rescueWindow = Math.min(520, Math.max(220, pick.materialLoss + 180));
@@ -549,8 +546,12 @@ export class SearchEngine {
     }
 
     if (pick?.risk >= 500) {
+      // Moderate heuristic warnings can only choose among moves that search
+      // already considers competitive. Only catastrophic risk (700+) may widen
+      // the normal personality window to rescue a rook/queen-scale disaster.
+      const tacticalRescueWindow = pick.risk >= 700 ? 120 : window;
       const rescuePool = pool
-        .filter(line => line.score >= bestScore - 120)
+        .filter(line => line.score >= bestScore - tacticalRescueWindow)
         .map(scoreLine);
       const safer = rescuePool
         .filter(line => line.risk + 220 < pick.risk && line.materialLoss < 180)
