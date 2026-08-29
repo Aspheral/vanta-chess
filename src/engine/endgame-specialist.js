@@ -197,13 +197,16 @@ export function endgameVolatility(position) {
   return Math.min(100, Math.round(advanced * 28 + (pieces <= 8 ? 35 : pieces <= 12 ? 18 : 0)));
 }
 
+/**
+ * Extensions are deliberately narrow. Generic king moves are not extended,
+ * because doing so can steal the shallow-search budget from concrete tactics.
+ * The specialist only extends advanced passed-pawn races where one tempo can
+ * literally become a queen.
+ */
 export function isEndgameCriticalMove(position, move) {
   if (!move || endgameWeight(position) < 0.6 || move.promotion) return false;
-  const type = typeOf(move.piece);
-  if (type === 'p') {
-    const after = position.makeMove(move);
-    return pawnProgress(move.to, colorOf(move.piece)) >= 4 && isPassedPawn(after, move.to, colorOf(move.piece));
-  }
-  if (type === 'k' && position.board.filter(Boolean).length <= 10) return true;
-  return false;
+  if (typeOf(move.piece) !== 'p') return false;
+  const after = position.makeMove(move);
+  return pawnProgress(move.to, colorOf(move.piece)) >= 4
+    && isPassedPawn(after, move.to, colorOf(move.piece));
 }
