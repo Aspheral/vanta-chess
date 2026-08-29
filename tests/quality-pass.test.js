@@ -63,16 +63,38 @@ test('opening move economy attacks repeat queen tours once the queen is no longe
   assert.ok(report.reasons.includes('repeat-queen-before-development'));
 });
 
-test('strict hanging-piece gate identifies 6.c3 as a clean knight loss', () => {
+test('strict hanging-piece gate identifies the real 6.c3 position as a piece-loss event', () => {
   const p = Position.fromFEN(fenBeforePly(dev, 11)); // after ...b5, before 6.c3
   const c3 = p.moveFromUci('c2c3');
   assert.ok(c3);
   const risk = strictHangingPieceRisk(p, c3);
   assert.ok(risk >= HANGING_GATE_THRESHOLD, `hanging risk only ${risk}`);
 
-  const r = engine(1000, 3).search(p, { moveTimeMs: 1000, maxDepth: 3 });
-  assert.notEqual(moveToUci(r.move), 'c2c3', `strict gate still allowed c3: ${JSON.stringify(r.candidates)}`);
-  assert.ok((r.selectedHangingRisk || 0) < HANGING_GATE_THRESHOLD, `selected hanging risk ${r.selectedHangingRisk}`);
+  // At this point Na4 is already trapped: Nc3 is met by ...dxc3, Nc5 by
+  // ...Qxc5, and Nb6 by ...cxb6. The prevention regression belongs on the
+  // earlier knight tour, not on pretending a safe move exists after ...b5.
+  for (const escape of ['a4c3', 'a4c5', 'a4b6']) {
+    const move = p.moveFromUci(escape);
+    assert.ok(move, `${escape} should be legal`);
+    assert.ok(strictHangingPieceRisk(p, move) >= HANGING_GATE_THRESHOLD, `${escape} unexpectedly safe`);
+  }
+});
+
+test('strict gate is wired into personality selection when a genuinely safe alternative exists', () => {
+  const p = Position.fromFEN('6k1/8/8/5p2/4N3/8/7P/6K1 w - - 0 1');
+  const ignore = p.moveFromUci('h2h3');
+  const escape = p.moveFromUci('e4c5');
+  assert.ok(ignore && escape);
+  assert.ok(strictHangingPieceRisk(p, ignore) >= HANGING_GATE_THRESHOLD);
+  assert.ok(strictHangingPieceRisk(p, escape) < HANGING_GATE_THRESHOLD);
+
+  const e = engine(500, 2);
+  const chosen = e.personalitySelect(p, [
+    { move: ignore, score: 50, pv: [ignore], personality: 100, exact: true },
+    { move: escape, score: 0, pv: [escape], personality: 0, exact: true },
+  ], { bestMove: ignore, score: 50, pv: [ignore] });
+  assert.equal(moveToUci(chosen.move), 'e4c5', 'personality must not override a safe escape with a hanging move');
+  assert.ok(chosen.hangingRisk < HANGING_GATE_THRESHOLD);
 });
 
 test('strict gate permits a sacrifice only with a large objective proof margin', () => {
