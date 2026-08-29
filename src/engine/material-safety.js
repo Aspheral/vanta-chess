@@ -2,9 +2,12 @@ import { PIECE_VALUES, typeOf } from '../chess/constants.js';
 import { FLAGS } from '../chess/position.js';
 import { staticExchangeEval } from './tactics.js';
 
-const CLEAN_LOSS_THRESHOLD = 240;
-const SAFE_EXPOSURE = 170;
-const COMPETITIVE_WINDOW = 150;
+// A minor exchanged for a pawn is already a serious one-move material loss.
+// Legal SEE reports that as roughly 200-230 cp, so the gate must trigger below
+// the old 240 cp cutoff or it misses exactly the real Chess.com blunders it is
+// meant to prevent.
+const CLEAN_LOSS_THRESHOLD = 180;
+const SAFE_EXPOSURE = 120;
 
 function captureExposure(after, capture, seeMemo) {
   if (!(capture.flags & FLAGS.CAPTURE)) return null;
@@ -38,19 +41,20 @@ export function hangingPieceExposure(position, move, seeMemo = new Map()) {
 
 function compensationRequired(exposure) {
   if (!exposure?.victimType) return 0;
-  if (exposure.victimType === 'q') return 360;
-  if (exposure.victimType === 'r') return 250;
-  return 175;
+  if (exposure.victimType === 'q') return 500;
+  if (exposure.victimType === 'r') return 340;
+  return 240;
 }
 
 /**
  * Strict Hanging-Piece Gate.
  *
- * If a competitive safe move exists, a line that simply drops a minor/rook/
- * queen is removed from the personality pool. A sacrifice can still pass when
- * objective search proves enough compensation by a large margin, or when the
- * line is mating. This keeps Vanta aggressive without letting style overrule a
- * clean one-move material loss.
+ * Once any materially sane legal candidate exists, a move that simply drops a
+ * minor/rook/queen is removed from the personality pool. The risky line can
+ * still survive when objective search proves a genuinely large advantage over
+ * the best safe line, or when it is mating. This is intentionally stricter
+ * than the personality risk penalty: style never gets to spend a whole piece
+ * for vague pressure.
  */
 export function strictHangingPieceGate(position, lines, seeMemo = new Map()) {
   if (!lines?.length) return { lines: [], blocked: [] };
@@ -58,11 +62,7 @@ export function strictHangingPieceGate(position, lines, seeMemo = new Map()) {
     line,
     exposure: hangingPieceExposure(position, line.move, seeMemo),
   }));
-  const bestScore = Math.max(...profiled.map(item => item.line.score));
-  const safe = profiled.filter(item =>
-    item.exposure.loss <= SAFE_EXPOSURE
-    && item.line.score >= bestScore - COMPETITIVE_WINDOW
-  );
+  const safe = profiled.filter(item => item.exposure.loss <= SAFE_EXPOSURE);
   if (!safe.length) return { lines, blocked: [] };
 
   const bestSafeScore = Math.max(...safe.map(item => item.line.score));
