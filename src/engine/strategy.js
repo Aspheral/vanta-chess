@@ -99,11 +99,10 @@ function pseudoDestinations(position, square) {
 
 /**
  * Cheap trap detector for non-pawn pieces. It deliberately does not call
- * legalMoves(), because this runs in static evaluation. A square counts as an
- * escape when it is not currently controlled, or when moving there captures a
- * piece at least as valuable as the trapped piece. The purpose is not perfect
- * tactics, but recognizing cages such as Na4 followed by ...b5 before the
- * material actually disappears one ply beyond the horizon.
+ * legalMoves(), so it can be used by root planning without turning every
+ * candidate into another search. A square counts as an escape when it is not
+ * currently controlled, or when moving there captures a piece at least as
+ * valuable as the trapped piece.
  */
 export function trappedPiecePenalty(position, color) {
   const enemy = opposite(color);
@@ -244,14 +243,13 @@ function passedPawnRaceScore(position, perspective) {
 }
 
 /**
- * Small phase-aware strategic supplement. The base evaluator remains the main
- * positional authority. Piece traps are included at every phase because a
- * caged minor is tactical material, while king activity and pawn-race terms
- * switch on only after the board simplifies.
+ * Phase-aware strategic supplement. The proven middlegame evaluator stays
+ * untouched; only simplified positions gain explicit king activity, pawn-race,
+ * blockade and rook-behind-passer terms.
  */
 export function strategicEvaluation(position, perspective = position.turn) {
+  if (!isEndgame(position)) return 0;
   const trapBalance = trappedPiecePenalty(position, opposite(perspective)) - trappedPiecePenalty(position, perspective);
-  if (!isEndgame(position)) return Math.round(clamp(trapBalance, -180, 180));
   const { total } = nonPawnMaterial(position);
   const factor = total <= 1800 ? 1 : 0.7;
   const kingActivity = (kingCentralization(position, perspective) - kingCentralization(position, opposite(perspective))) * factor;
@@ -278,7 +276,9 @@ function castlingRightsRemain(position, color) {
 function quietTrapForecast(position, defenderColor) {
   const before = trappedPiecePenalty(position, defenderColor);
   let worstIncrease = 0;
-  for (const threat of quietThreatMoves(position, 4)) {
+  for (const threat of position.legalMoves()) {
+    if ((threat.flags & FLAGS.CAPTURE) || threat.promotion) continue;
+    if (quietThreatScore(position, threat) < 58) continue;
     const after = position.makeMove(threat);
     worstIncrease = Math.max(worstIncrease, trappedPiecePenalty(after, defenderColor) - before);
   }
@@ -288,8 +288,8 @@ function quietTrapForecast(position, defenderColor) {
 /**
  * Root style discipline learned from the August game batch. It does not ban
  * tactics. Concrete captures/checks/promotions remain search-authoritative,
- * while repeated minor moves, queen tourism and voluntary king exposure must
- * pay a real opportunity cost before the army is ready.
+ * while repeated minor moves, queen tourism, voluntary king exposure and
+ * walk-into-a-cage plans must pay a real opportunity cost.
  */
 export function strategicMoveBonus(position, move) {
   if (!move) return 0;
