@@ -272,6 +272,7 @@ export function openingMoveDiscipline(position, move) {
   const next = position.makeMove(move);
   const givesCheck = next.isInCheck();
   const forcing = givesCheck || Boolean(move.promotion) || capturedValue >= PIECE_VALUES.n;
+  const pieceUnderAttack = position.isSquareAttacked(move.from, opposite(us));
   let bonus = 0;
 
   const castle = Boolean(move.flags & (FLAGS.CASTLE_K | FLAGS.CASTLE_Q));
@@ -295,11 +296,10 @@ export function openingMoveDiscipline(position, move) {
     }
   }
 
-  if (type === 'n' && !forcing) {
+  if (type === 'n' && !forcing && !pieceUnderAttack) {
     const [toRow, toFile] = rowCol(move.to);
-    // A/H-file knight excursions are especially costly early because they
-    // slash retreat mobility. Back-rank retreats are less severe but still a
-    // sign that development has gone backwards.
+    // Penalize voluntary rim excursions, not emergency retreats. When a knight
+    // is already attacked, tactical survival outranks aesthetic development.
     if (toFile === 0 || toFile === 7) bonus -= 40;
     else if (toRow === 0 || toRow === 7) bonus -= 15;
   }
