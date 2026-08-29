@@ -23,12 +23,13 @@ export class SearchEngine extends CoreSearchEngine {
     const selectedRisk = rootSafetyRisk(position, selected.move);
 
     // A cleanly hanging/trapped minor or major is a safety failure, not a style
-    // preference. Permit a wide rescue window because a shallow evaluation can
-    // easily be wrong by roughly the value of the piece it is about to lose.
-    // A genuinely sound sacrifice still survives if no competitive safe line
-    // exists or if search values the sacrifice more than that material margin.
+    // preference. Permit roughly a piece-value-sized rescue window because a
+    // shallow evaluation can be wrong by the value of the unit it is about to
+    // lose. The gate is narrow: it only activates after root safety has already
+    // demonstrated severe immediate material or trap risk, and the replacement
+    // itself must be genuinely safe.
     if (selectedRisk >= 560) {
-      const margin = selectedRisk >= 820 ? 340 : 290;
+      const margin = selectedRisk >= 820 ? 430 : 380;
       const alternatives = pool
         .filter(line => line.score >= bestScore - margin)
         .map(line => ({ ...line, safetyRisk: rootSafetyRisk(position, line.move) }))
