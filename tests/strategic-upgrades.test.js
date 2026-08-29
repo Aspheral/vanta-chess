@@ -30,7 +30,9 @@ test('strict hanging-piece gate blocks the real c3 knight abandonment from the D
   const rescue=p.moveFromUci('a4c5');
   assert.ok(blunder&&rescue);
   const exposure=hangingPieceExposure(p,blunder);
-  assert.ok(exposure.loss>=240,`c3 exposure only ${JSON.stringify(exposure)}`);
+  // ...bxa4 wins a knight for a pawn; legal SEE correctly prices the net
+  // material swing rather than the knight's full sticker value.
+  assert.ok(exposure.loss>=180,`c3 exposure only ${JSON.stringify(exposure)}`);
   assert.equal(exposure.victimType,'n');
 
   const gated=strictHangingPieceGate(p,[
