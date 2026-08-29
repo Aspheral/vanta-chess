@@ -1,4 +1,4 @@
-const CACHE='vanta-chess-v14';
+const CACHE='vanta-chess-v15';
 const SHELL=[
   './',
   './index.html',
@@ -10,6 +10,7 @@ const SHELL=[
   './src/spectate.css',
   './src/boot.js',
   './src/main.js',
+  './src/pgn-copy-ui.js',
   './src/spectate-ui.js',
   './src/stockfish-client.js',
   './src/chess/constants.js',
