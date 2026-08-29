@@ -30,13 +30,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y stockfish
           test -x /usr/games/stockfish
-      - name: Select optimized production search path
+      - name: Select persistent competitive production search path
         run: |
           python - <<'PY'
           from pathlib import Path
           p=Path('src/engine/stress-match.js')
           s=p.read_text()
-          s=s.replace("import { SearchEngine } from './search.js';", "import { StrongSearchEngine as SearchEngine } from './strong-search.js';")
+          s=s.replace(
+              "import { SearchEngine } from './search.js';",
+              "import { CompetitiveSearchEngine as SearchEngine } from './competitive-search.js';",
+          )
+          s=s.replace(
+              "function productionVantaMove(game) {",
+              "function productionVantaMove(game, engine) {",
+          )
+          s=s.replace(
+              "  const run = excludeMoves => searchWithPracticalSafety(\n    new SearchEngine(config),\n    position,",
+              "  engine.config = { ...engine.config, ...config };\n  const run = excludeMoves => searchWithPracticalSafety(\n    engine,\n    position,",
+          )
+          s=s.replace(
+              "  const game = setupGame(opening);\n  await stockfish.newGame();",
+              "  const game = setupGame(opening);\n  const engine = new SearchEngine();\n  await stockfish.newGame();",
+          )
+          s=s.replace(
+              "      const result = productionVantaMove(game);",
+              "      const result = productionVantaMove(game, engine);",
+          )
           p.write_text(s)
           PY
       - name: Play paired randomized opening shard
