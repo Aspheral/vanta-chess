@@ -44,9 +44,10 @@ export class CompetitiveSearchEngine extends StrongSearchEngine {
     if (qply >= 7 || ply > 22 || this.timeUp()) return inCheck ? alpha : Math.max(alpha, stand);
 
     // The previous strong path only searched quiet checks when a promotion or
-    // current check made cheapVolatility high. The audit's 141 quiet-horizon
-    // mistakes show that was too restrictive. Search quiet checks at qply 0 in
-    // every position, but only that first frontier so qsearch cannot explode.
+    // current check made cheapVolatility high. The audit's quiet-horizon errors
+    // show that was too restrictive. Search quiet checks at qply 0 in every
+    // position, but only that first frontier so qsearch cannot explode.
+    const quietCheckUcis = new Set();
     if (!inCheck && qply === 0) {
       const existing = new Set(moves.map(moveToUci));
       for (const move of position.legalMoves()) {
@@ -55,23 +56,28 @@ export class CompetitiveSearchEngine extends StrongSearchEngine {
         if (position.makeMove(move).isInCheck()) {
           moves.push(move);
           existing.add(uci);
+          quietCheckUcis.add(uci);
         }
       }
     }
 
-    // In promotion races keep the original volatility behavior available for
-    // future extensions without broadening ordinary qsearch beyond checks.
     const volatile = cheapVolatility(position) >= 48;
 
-    moves = [...moves].sort((a, b) => {
-      const av = PIECE_VALUES[typeOf(a.captured)] || 0;
-      const bv = PIECE_VALUES[typeOf(b.captured)] || 0;
-      const aa = PIECE_VALUES[typeOf(a.piece)] || 0;
-      const ba = PIECE_VALUES[typeOf(b.piece)] || 0;
-      const aCheck = !(a.flags & FLAGS.CAPTURE) && !a.promotion && position.makeMove(a).isInCheck() ? 1 : 0;
-      const bCheck = !(b.flags & FLAGS.CAPTURE) && !b.promotion && position.makeMove(b).isInCheck() ? 1 : 0;
-      return (bCheck * 70_000 + bv * 12 - ba) - (aCheck * 70_000 + av * 12 - aa);
+    // Precompute ordering once. Re-running makeMove()/isInCheck() inside the
+    // Array.sort comparator multiplied the cost by O(n log n), erasing part of
+    // the depth the new horizon check was intended to protect.
+    const ordered = moves.map(move => {
+      const victim = PIECE_VALUES[typeOf(move.captured)] || 0;
+      const attacker = PIECE_VALUES[typeOf(move.piece)] || 0;
+      const quietCheck = quietCheckUcis.has(moveToUci(move));
+      const promotion = move.promotion ? (PIECE_VALUES[move.promotion] || 0) : 0;
+      return {
+        move,
+        score: (quietCheck ? 70_000 : 0) + (move.promotion ? 90_000 + promotion * 10 : 0) + victim * 12 - attacker,
+      };
     });
+    ordered.sort((a, b) => b.score - a.score);
+    moves = ordered.map(entry => entry.move);
 
     for (const move of moves) {
       if (this.timeUp()) break;
