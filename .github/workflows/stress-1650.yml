@@ -1,0 +1,82 @@
+name: Vanta 1650 Stress Test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: vanta-1650-stress-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  play:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Stockfish 16
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y stockfish
+          test -x /usr/games/stockfish
+      - name: Play paired randomized opening shard
+        env:
+          STRESS_GAMES: '50'
+          STRESS_SHARD: ${{ matrix.shard }}
+          STRESS_SHARDS: '5'
+          STRESS_ELO: '1650'
+          STRESS_MOVE_MS: '650'
+          STRESS_MAX_PLIES: '120'
+          STRESS_SEED: '20260829'
+          STRESS_REPORT: benchmarks/stress-1650-shard-${{ matrix.shard }}.json
+        run: node src/engine/stress-match.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stress-1650-shard-${{ matrix.shard }}
+          path: benchmarks/stress-1650-shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+
+  analyze:
+    if: always() && (github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650'))
+    needs: play
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Stockfish 16
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y stockfish
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stress-1650-shard-*
+          merge-multiple: true
+          path: benchmarks/stress-shards
+      - name: Diagnose every Vanta move at full Stockfish strength
+        env:
+          STRESS_ANALYSIS_DEPTH: '9'
+          STRESS_MISTAKE_CP: '90'
+          STRESS_BLUNDER_CP: '180'
+        run: node src/engine/stress-analyze.js benchmarks/stress-shards benchmarks/stress-1650.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stress-1650-report
+          path: benchmarks/stress-1650.json
+          if-no-files-found: error
+      - name: Enforce requested 50 percent score gate
+        run: |
+          node -e "const r=require('./benchmarks/stress-1650.json'); console.log('score',r.totals.scoreRate,'win',r.totals.winRate); if(r.totals.scoreRate < 0.5) process.exit(1)"
