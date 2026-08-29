@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { Position, moveToUci } from '../src/chess/position.js';
 import { ChessGame } from '../src/chess/game.js';
 import { SearchEngine } from '../src/engine/search.js';
-import { rootTacticalRisk } from '../src/engine/tactics.js';
 import {
   strategicEvaluation, strategicMoveBonus, quietThreatScore, quietThreatMoves, isEndgame,
+  trappedPiecePenalty,
 } from '../src/engine/strategy.js';
 import { repetitionExclusions, wouldRepeatExistingPosition } from '../src/engine/draw-policy.js';
 
@@ -13,15 +13,38 @@ function engine(ms=900, depth=3, extra={}) {
   return new SearchEngine({maxDepth:depth,moveTimeMs:ms,nodeLimit:280000,selectionWindow:32,evalNoise:0,...extra});
 }
 
-test('cleanly hanging the a4 knight is treated as a practical root veto',()=>{
-  // Exact structure from the recent DevTheExpertBack game after ...b5. The
-  // black b5-pawn attacks Na4; 6.c3?? simply permits ...bxa4.
-  const p=Position.fromFEN('rnb1kb1r/p1p1pppp/3q1n2/1p2N3/N2p1P2/8/PPPPP1PP/R1BQKB1R w KQkq b6 0 6');
-  const ignore=p.moveFromUci('c2c3');
-  assert.ok(ignore);
-  assert.ok(rootTacticalRisk(p,ignore)>=200,`ignored knight risk ${rootTacticalRisk(p,ignore)}`);
-  const r=engine(1000,3).search(p,{moveTimeMs:1000,maxDepth:3});
-  assert.notEqual(moveToUci(r.move),'c2c3',`still abandoned Na4: ${JSON.stringify(r.candidates)}`);
+test('the Na4 cage is recognized as a trap rather than blamed on the later c3 move',()=>{
+  // After 5.f4 ...b5 in the DevTheExpertBack game the a4-knight has no safe
+  // square: Nb6 meets cxb6, Nc5 meets Qxc5, Nc3 meets dxc3, and b2 is occupied.
+  const trapped=Position.fromFEN('rnb1kb1r/p1p1pppp/3q1n2/1p2N3/N2p1P2/8/PPPPP1PP/R1BQKB1R w KQkq b6 0 6');
+  assert.ok(trappedPiecePenalty(trapped,'w')>=160,`trap penalty ${trappedPiecePenalty(trapped,'w')}`);
+
+  // Vacating b2 before ...b5 leaves Nb2 as an escape. The trap evaluator must
+  // distinguish prophylaxis from the already-lost position.
+  const before=Position.fromFEN('rnb1kb1r/ppp1pppp/3q1n2/4N3/N2p4/8/PPPPPPPP/R1BQKB1R w KQkq - 2 5');
+  const b3=before.moveFromUci('b2b3');
+  assert.ok(b3);
+  const afterB3=before.makeMove(b3);
+  const b5=afterB3.moveFromUci('b7b5');
+  assert.ok(b5);
+  const escaped=afterB3.makeMove(b5);
+  assert.ok(trappedPiecePenalty(escaped,'w')+80<trappedPiecePenalty(trapped,'w'),
+    `${trappedPiecePenalty(escaped,'w')} vs ${trappedPiecePenalty(trapped,'w')}`);
+});
+
+test('before the cage closes Vanta sees quiet b5 and avoids the careless f4 plan',()=>{
+  const p=Position.fromFEN('rnb1kb1r/ppp1pppp/3q1n2/4N3/N2p4/8/PPPPPPPP/R1BQKB1R w KQkq - 2 5');
+  const f4=p.moveFromUci('f2f4');
+  const b3=p.moveFromUci('b2b3');
+  assert.ok(f4&&b3);
+  const afterF4=p.makeMove(f4);
+  const b5=afterF4.moveFromUci('b7b5');
+  assert.ok(b5);
+  assert.ok(quietThreatScore(afterF4,b5)>=68,`b5 threat ${quietThreatScore(afterF4,b5)}`);
+  assert.ok(strategicMoveBonus(p,f4)+25<strategicMoveBonus(p,b3),
+    `f4 ${strategicMoveBonus(p,f4)}, b3 ${strategicMoveBonus(p,b3)}`);
+  const r=engine(1100,3).search(p,{moveTimeMs:1100,maxDepth:3});
+  assert.notEqual(moveToUci(r.move),'f2f4',`still walked into the b5 cage: ${JSON.stringify(r.candidates)}`);
 });
 
 test('opening move economy penalizes knight tourism while pieces remain home',()=>{
