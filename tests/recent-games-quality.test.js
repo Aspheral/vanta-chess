@@ -5,7 +5,7 @@ import { ChessGame } from '../src/chess/game.js';
 import { SearchEngine } from '../src/engine/search.js';
 import {
   rootStrategicAdjustment, strategicPositionValue, immediateMaterialLossRisk,
-  isForcingQuietThreat,
+  rootSafetyRisk, isForcingQuietThreat,
 } from '../src/engine/quality.js';
 import { repetitionExclusions, shouldRejectRepetitionMove } from '../src/engine/draw-policy.js';
 
@@ -13,13 +13,16 @@ function engine(ms=700,depth=3) {
   return new SearchEngine({maxDepth:depth,moveTimeMs:ms,nodeLimit:260000,selectionWindow:32,evalNoise:0});
 }
 
-test('recent DevTheExpertBack loss: Vanta does not ignore the attacked a4 knight with 6.c3',()=>{
-  const p=Position.fromFEN('rnb1kb1r/p1p1pppp/3q1n2/1p2N3/N2p1P2/8/PPPPP1PP/R1BQKB1R w KQkq b6 0 6');
-  const c3=p.moveFromUci('c2c3');
-  assert.ok(c3);
-  assert.ok(immediateMaterialLossRisk(p,c3)>=600,`c3 risk ${immediateMaterialLossRisk(p,c3)}`);
+test('recent DevTheExpertBack loss: Vanta sees that 5.f4 allows the quiet b5 knight trap',()=>{
+  // The a4 knight is not actually rescuable after 5...b5: Nc3 meets ...dxc3,
+  // Nb6 meets ...axb6, and Nc5 can be taken by the queen. The real error is
+  // therefore one move earlier, allowing the quiet trap with 5.f4?.
+  const p=Position.fromFEN('rnb1kb1r/ppp1pppp/3q1n2/4N3/N2p4/8/PPPPPPPP/R1BQKB1R w KQkq - 2 5');
+  const f4=p.moveFromUci('f2f4');
+  assert.ok(f4);
+  assert.ok(rootSafetyRisk(p,f4)>=560,`f4 trap risk ${rootSafetyRisk(p,f4)}`);
   const r=engine(900,4).search(p,{moveTimeMs:900,maxDepth:4});
-  assert.notEqual(moveToUci(r.move),'c2c3',JSON.stringify(r.candidates));
+  assert.notEqual(moveToUci(r.move),'f2f4',JSON.stringify(r.candidates));
 });
 
 test('recent danh loss: pawn hunting Qxg7 cannot outrank saving the attacked b5 knight',()=>{
@@ -81,7 +84,7 @@ test('twofold cycling is treated as avoidable lack of progress while Vanta is be
   assert.equal(shouldRejectRepetitionMove(game,repeat,100),true);
 });
 
-test('quiet pawn forks are explicitly tactical at the search horizon',()=>{
+test('quiet pawn forks are explicitly tactical near the search frontier',()=>{
   const p=Position.fromFEN('6k1/8/8/8/4n1b1/8/5P2/6K1 w - - 0 1');
   const fork=p.moveFromUci('f2f3');
   assert.ok(fork);
