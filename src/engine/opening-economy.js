@@ -71,7 +71,7 @@ export function openingMoveEconomyReport(position, move) {
       bonus += 18 + Math.min(8, homeMinors * 2);
       reasons.push('develop-new-minor');
     } else if (homeMinors > 0 && !tactical && !escapingAttack) {
-      const repeatPenalty = 18 + homeMinors * 8;
+      const repeatPenalty = 22 + homeMinors * 9;
       bonus -= repeatPenalty;
       reasons.push('repeat-minor-before-development');
       if (type === 'n' && knightOnRim(move.to)) {
@@ -110,6 +110,10 @@ export function openingMoveEconomyReport(position, move) {
 
   if (type === 'p' && !tactical && homeMinors >= 2) {
     const file = move.from % 8;
+    if ([3, 4].includes(file)) {
+      bonus += 6;
+      reasons.push('central-pawn-development');
+    }
     if ([0, 1, 6, 7].includes(file)) {
       bonus -= 8 + Math.min(8, homeMinors * 2);
       reasons.push('flank-pawn-before-development');
