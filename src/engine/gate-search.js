@@ -9,11 +9,11 @@ const MATE_TT_BOUND = MATE_SCORE - 1000;
 
 function rootCap(depth) {
   if (depth <= 2) return Infinity;
-  if (depth === 3) return 14;
-  if (depth === 4) return 10;
-  if (depth === 5) return 7;
-  if (depth === 6) return 5;
-  return 4;
+  if (depth === 3) return 10;
+  if (depth === 4) return 7;
+  if (depth === 5) return 5;
+  if (depth === 6) return 4;
+  return 3;
 }
 
 function isForcingRootMove(position, move) {
@@ -68,11 +68,10 @@ function allowsImmediateMate(position, move) {
 /**
  * Search variant dedicated to the 1650 literal-win gate.
  *
- * The stress data showed full-width depth three was consuming almost the whole
- * 650 ms budget, so deeper pruning never got a chance to run. Every legal root
- * move is now searched through depth two. From depth three onward Vanta keeps
- * the best shallow candidates plus forcing moves, and retains the complete
- * depth-two set as an emergency mate-rescue pool.
+ * Every legal root move gets a depth-two audition. Deeper iterations use a
+ * progressively tighter beam plus forcing moves. The complete depth-two set is
+ * retained for post-search tactical/safety rescue so pruning a candidate from
+ * the deep beam cannot erase a legal defensive resource altogether.
  */
 export class GateSearchEngine extends StrongSearchEngine {
   search(position, options = {}) {
@@ -81,7 +80,35 @@ export class GateSearchEngine extends StrongSearchEngine {
       this.broadRootLines = [];
     }
     this.lastRootHash = position.hash;
-    return super.search(position, options);
+
+    const result = super.search(position, options);
+
+    // The generic practical-safety wrapper only sees result.candidates. Expose
+    // the strongest exact depth-two lines as additional rescue candidates so a
+    // move that fell just outside the deeper beam can still save a hanging
+    // major piece. These are never allowed to overrule objective search merely
+    // for style; they are available only to bounded post-search guardrails.
+    const merged = [];
+    const seen = new Set();
+    const append = candidate => {
+      if (!candidate?.uci || seen.has(candidate.uci)) return;
+      seen.add(candidate.uci);
+      merged.push(candidate);
+    };
+    for (const candidate of result.candidates || []) append(candidate);
+    for (const line of this.broadRootLines || []) {
+      if (line.exact === false) continue;
+      append({
+        uci: moveToUci(line.move),
+        score: line.score,
+        pv: line.pv.map(moveToUci),
+        personality: 0,
+        exact: true,
+        shallowRescue: true,
+      });
+      if (merged.length >= 14) break;
+    }
+    return { ...result, candidates: merged };
   }
 
   searchRoot(position, depth, options = {}) {
