@@ -1,18 +1,19 @@
 import { FLAGS, Position, moveToUci } from '../chess/position.js';
 import { PIECE_VALUES, colorOf, opposite, typeOf } from '../chess/constants.js';
 import { MATE_SCORE } from './evaluation.js';
-import { CompetitiveSearchEngine } from './competitive-search.js';
-import { cheapVolatility, hasNearPromotion } from './tactics.js';
+import { StrongSearchEngine } from './strong-search.js';
+import { cheapVolatility, hasNearPromotion, rootTacticalRisk } from './tactics.js';
 
 const INF = 1_000_000;
 const MATE_TT_BOUND = MATE_SCORE - 1000;
 
 function rootCap(depth) {
-  if (depth <= 3) return Infinity;
-  if (depth === 4) return 12;
-  if (depth === 5) return 8;
-  if (depth === 6) return 6;
-  return 5;
+  if (depth <= 2) return Infinity;
+  if (depth === 3) return 14;
+  if (depth === 4) return 10;
+  if (depth === 5) return 7;
+  if (depth === 6) return 5;
+  return 4;
 }
 
 function isForcingRootMove(position, move) {
@@ -67,17 +68,13 @@ function allowsImmediateMate(position, move) {
 /**
  * Search variant dedicated to the 1650 literal-win gate.
  *
- * Every legal root move is verified through depth three. Deeper iterations
- * progressively narrow to the candidates that survived that search, while
- * forcing moves remain eligible. The full depth-three root set is retained as
- * an emergency mate-rescue pool, so narrowing can never make a shallow ranking
- * error irreversible.
- *
- * Interior search adds conservative null-move pruning, low-depth futility and
- * less fragmented TT keys. These are deliberately disabled in check, near the
- * fifty-move boundary and in low-material positions where zugzwang is common.
+ * The stress data showed full-width depth three was consuming almost the whole
+ * 650 ms budget, so deeper pruning never got a chance to run. Every legal root
+ * move is now searched through depth two. From depth three onward Vanta keeps
+ * the best shallow candidates plus forcing moves, and retains the complete
+ * depth-two set as an emergency mate-rescue pool.
  */
-export class GateSearchEngine extends CompetitiveSearchEngine {
+export class GateSearchEngine extends StrongSearchEngine {
   search(position, options = {}) {
     if (this.lastRootHash !== position.hash) {
       this.rootOrder = [];
@@ -112,7 +109,7 @@ export class GateSearchEngine extends CompetitiveSearchEngine {
       const keptUci = new Set(kept.map(moveToUci));
       let forcingExtras = 0;
       for (const move of moves.slice(cap)) {
-        if (forcingExtras >= 4) break;
+        if (forcingExtras >= 5) break;
         if (!isForcingRootMove(position, move)) continue;
         const uci = moveToUci(move);
         if (keptUci.has(uci)) continue;
@@ -167,7 +164,7 @@ export class GateSearchEngine extends CompetitiveSearchEngine {
       return b.score - a.score;
     });
 
-    if (depth <= 3 && complete && lines.length === moves.length) {
+    if (depth <= 2 && complete && lines.length === moves.length) {
       this.broadRootLines = lines.map(line => ({ ...line, pv: [...line.pv] }));
     }
 
@@ -197,9 +194,6 @@ export class GateSearchEngine extends CompetitiveSearchEngine {
     const inCheck = position.isInCheck();
     if (inCheck && depth < 8) depth++;
 
-    // Halfmove count cannot affect a <=9 ply search until it is close to the
-    // fifty-move boundary. Collapsing the common range dramatically improves
-    // persistent TT reuse across transpositions and consecutive moves.
     const halfmoveKey = position.halfmove >= 88 ? position.halfmove : 0;
     const key = `g:${position.hash.toString()}:${halfmoveKey}`;
     const tt = this.tt.get(key);
@@ -217,9 +211,6 @@ export class GateSearchEngine extends CompetitiveSearchEngine {
 
     const staticScore = this.staticEval(position);
 
-    // Conservative null-move pruning. Avoid check, pawn-only endings,
-    // near-fifty-move positions and mate windows, all of which are classic
-    // null-move failure zones.
     if (
       allowNull
       && depth >= 3
@@ -231,10 +222,9 @@ export class GateSearchEngine extends CompetitiveSearchEngine {
       && staticScore >= beta - 20
     ) {
       const reduction = depth >= 6 ? 3 : 2;
-      const nullDepth = Math.max(0, depth - 1 - reduction);
       const nullScore = -this.negamax(
         nullPosition(position),
-        nullDepth,
+        Math.max(0, depth - 1 - reduction),
         -beta,
         -beta + 1,
         ply + 1,
@@ -245,8 +235,6 @@ export class GateSearchEngine extends CompetitiveSearchEngine {
       if (!this.timeUp() && nullScore >= beta) return beta;
     }
 
-    // Razoring converts obviously hopeless one-ply nodes into qsearch. The
-    // margin is intentionally wide because Vanta values tactical volatility.
     if (depth === 1 && !inCheck && staticScore + 210 <= alpha) {
       const q = this.quiescence(position, alpha, beta, ply, 0);
       if (q <= alpha) return q;
@@ -267,11 +255,8 @@ export class GateSearchEngine extends CompetitiveSearchEngine {
       const move = moves[i];
       const next = position.makeMove(move);
       const quiet = !(move.flags & FLAGS.CAPTURE) && !move.promotion;
-      const needCheckInfo = quiet && (depth === 1 || depth >= 3);
-      const givesCheck = needCheckInfo && next.isInCheck();
+      const givesCheck = quiet && (depth === 1 || depth >= 3) && next.isInCheck();
 
-      // Low-depth futility/late-move pruning only removes quiet, non-checking
-      // moves when the static position is already well below alpha.
       if (!inCheck && quiet && !givesCheck && !volatile) {
         if (depth === 1 && i >= 3 && staticScore + 125 <= alpha) continue;
         if (depth === 2 && i >= 12 && staticScore + 90 <= alpha) continue;
@@ -308,7 +293,6 @@ export class GateSearchEngine extends CompetitiveSearchEngine {
       pathHashes.pop();
 
       if (this.timeUp()) break;
-
       if (score > bestScore) {
         bestScore = score;
         bestMove = move;
@@ -376,7 +360,7 @@ export class GateSearchEngine extends CompetitiveSearchEngine {
       score: pick.score,
       objectiveScore: pick.score,
       pv: pick.pv,
-      risk: 0,
+      risk: rootTacticalRisk(position, pick.move, this.seeMemo),
       mateRescue: {
         from: moveToUci(initial.move),
         to: moveToUci(pick.move),
