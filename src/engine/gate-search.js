@@ -1,225 +1,136 @@
-import { FLAGS, Position, moveToUci } from '../chess/position.js';
-import { PIECE_VALUES, colorOf, typeOf, opposite } from '../chess/constants.js';
-import { epKey, normalizeHash, turnKey } from '../chess/zobrist.js';
+import { FLAGS, moveToUci } from '../chess/position.js';
 import { MATE_SCORE } from './evaluation.js';
 import { StrongSearchEngine } from './strong-search.js';
-import { cheapVolatility, hasNearPromotion } from './tactics.js';
 
 const INF = 1_000_000;
-const MATE_TT_BOUND = MATE_SCORE - 1000;
 
-function scoreToTT(score, ply) {
-  if (score > MATE_TT_BOUND) return score + ply;
-  if (score < -MATE_TT_BOUND) return score - ply;
-  return score;
+function rootCap(depth) {
+  if (depth <= 3) return Infinity;
+  if (depth === 4) return 16;
+  if (depth === 5) return 12;
+  return 8;
 }
 
-function scoreFromTT(score, ply) {
-  if (score > MATE_TT_BOUND) return score - ply;
-  if (score < -MATE_TT_BOUND) return score + ply;
-  return score;
-}
-
-function nonPawnMaterial(position, color) {
-  let total = 0;
-  for (const piece of position.board) {
-    if (!piece || colorOf(piece) !== color) continue;
-    const type = typeOf(piece);
-    if (type === 'p' || type === 'k') continue;
-    total += PIECE_VALUES[type] || 0;
-  }
-  return total;
-}
-
-function makeNullMove(position) {
-  // Null move is search-only. The side to move changes, en-passant expires,
-  // castling rights and pieces remain untouched, and the zobrist hash mirrors
-  // exactly those state changes.
-  const hash = normalizeHash(position.hash ^ epKey(position.epSquare) ^ turnKey());
-  return new Position({
-    board: position.board,
-    turn: opposite(position.turn),
-    castling: position.castling,
-    epSquare: null,
-    halfmove: position.halfmove + 1,
-    fullmove: position.fullmove + (position.turn === 'b' ? 1 : 0),
-    hash,
-  });
+function isForcingRootMove(position, move) {
+  if ((move.flags & FLAGS.CAPTURE) || move.promotion) return true;
+  return position.makeMove(move).isInCheck();
 }
 
 /**
  * Search variant dedicated to the 1650 literal-win gate.
  *
- * The full-root safety repair removed a large source of false pruning, but it
- * also exposed the real bottleneck: Vanta averages only about depth three at
- * 650 ms. This class keeps StrongSearchEngine's evaluator, qsearch, ordering,
- * personality and timing, and adds conservative null-move pruning plus a less
- * fragmented transposition key. It never grants Vanta extra clock time.
+ * Vanta's primary 650 ms bottleneck is root breadth. It was spending most of
+ * the clock re-searching every legal root move at every iterative-deepening
+ * level, then dying with only depth 2-3 completed. This engine verifies every
+ * legal move through depth three, then progressively narrows only the deeper
+ * iterations to the candidates that survived that real search. A few forcing
+ * moves are retained even when they fall outside the cap.
+ *
+ * Unlike the old practical-safety filter, nothing is discarded before it has
+ * actually been searched. If a narrowed deeper iteration times out, the normal
+ * SearchEngine contract automatically falls back to the last fully completed
+ * broad iteration.
  */
 export class GateSearchEngine extends StrongSearchEngine {
-  resetStats() {
-    super.resetStats();
-    this.nullPrunes = 0;
+  search(position, options = {}) {
+    // rootOrder is useful inside one iterative-deepening search, but UCI strings
+    // from the previous *position* are arbitrary move-order noise. Keep the TT,
+    // history and killers persistent while resetting stale root ordering.
+    if (this.lastRootHash !== position.hash) this.rootOrder = [];
+    this.lastRootHash = position.hash;
+    return super.search(position, options);
   }
 
-  negamax(position, depth, alpha, beta, ply, pvOut, pathHashes, allowNull = true) {
-    this.nodes++;
-    if ((this.nodes & 511) === 0 && this.timeUp()) return this.staticEval(position);
+  searchRoot(position, depth, options = {}) {
+    const excluded = new Set(options.excludeMoves || []);
+    let moves = this.orderMoves(position, position.legalMoves(), 0, null)
+      .filter(move => !excluded.has(moveToUci(move)));
 
-    let priorOccurrences = 0;
-    for (const hash of pathHashes) if (hash === position.hash) priorOccurrences++;
-    if (priorOccurrences >= 2) return this.repetitionUtility(position);
-    if (position.halfmove >= 100) return 0;
-
-    const inCheck = position.isInCheck();
-    if (inCheck && depth < 8) depth++;
-
-    // fastEvaluate() has no fullmove-dependent terms. Keeping fullmove in the
-    // TT key needlessly split otherwise identical positions and reduced reuse.
-    const key = `g:${position.hash.toString()}:${Math.min(position.halfmove, 100)}`;
-    const tt = this.tt.get(key);
-    if (tt && tt.depth >= depth) {
-      this.ttHits++;
-      const ttScore = scoreFromTT(tt.score, ply);
-      if (tt.flag === 'exact') return ttScore;
-      if (tt.flag === 'lower') alpha = Math.max(alpha, ttScore);
-      else if (tt.flag === 'upper') beta = Math.min(beta, ttScore);
-      if (alpha >= beta) return ttScore;
+    if (this.rootOrder.length) {
+      const rank = new Map(this.rootOrder.map((uci, index) => [uci, index]));
+      moves = [...moves].sort((a, b) => {
+        const ar = rank.has(moveToUci(a)) ? rank.get(moveToUci(a)) : 999;
+        const br = rank.has(moveToUci(b)) ? rank.get(moveToUci(b)) : 999;
+        return ar - br;
+      });
     }
 
-    if (position.isInsufficientMaterial()) return 0;
-    if (depth <= 0) return this.quiescence(position, alpha, beta, ply, 0);
+    if (!moves.length) {
+      const score = position.isInCheck() ? -MATE_SCORE : 0;
+      return { bestMove: null, score, pv: [], lines: [], complete: true };
+    }
 
-    // Generate legality before null pruning so a stalemate can never be turned
-    // into a beta cutoff. Ordering is deferred until after the null test.
-    const legalMoves = position.legalMoves();
-    if (legalMoves.length === 0) return inCheck ? -MATE_SCORE + ply : 0;
-
-    // Conservative null-move pruning. Only try it when the static position is
-    // already comfortably above beta and the side has enough non-pawn material
-    // that classical zugzwang is unlikely. Tactical/promotion nodes stay fully
-    // searched. Consecutive null moves are forbidden.
-    if (
-      allowNull
-      && !inCheck
-      && depth >= 4
-      && position.halfmove < 90
-      && Math.abs(beta) < MATE_TT_BOUND
-      && nonPawnMaterial(position, position.turn) >= 500
-      && !hasNearPromotion(position)
-    ) {
-      const stand = this.staticEval(position);
-      if (stand >= beta + 35 && cheapVolatility(position) < 64) {
-        const reduction = depth >= 7 ? 3 : 2;
-        const nullDepth = Math.max(0, depth - 1 - reduction);
-        const nullPosition = makeNullMove(position);
-        const nullPv = [];
-        pathHashes.push(position.hash);
-        const score = -this.negamax(
-          nullPosition,
-          nullDepth,
-          -beta,
-          -beta + 1,
-          ply + 1,
-          nullPv,
-          pathHashes,
-          false,
-        );
-        pathHashes.pop();
-        if (!this.timeUp() && score >= beta) {
-          this.nullPrunes++;
-          this.cutoffs++;
-          return score;
-        }
+    const cap = rootCap(depth);
+    if (Number.isFinite(cap) && moves.length > cap && this.rootOrder.length) {
+      const kept = moves.slice(0, cap);
+      const keptUci = new Set(kept.map(moveToUci));
+      let forcingExtras = 0;
+      for (const move of moves.slice(cap)) {
+        if (forcingExtras >= 4) break;
+        if (!isForcingRootMove(position, move)) continue;
+        const uci = moveToUci(move);
+        if (keptUci.has(uci)) continue;
+        kept.push(move);
+        keptUci.add(uci);
+        forcingExtras++;
       }
+      moves = kept;
     }
 
-    const moves = this.orderMoves(position, legalMoves, ply, tt?.move || null);
-    const originalAlpha = alpha;
-    const originalBeta = beta;
-    let bestScore = -INF;
+    const lines = [];
+    const path = [position.hash];
+    const verifyWindow = Math.min(8, Math.max(0, this.config.selectionWindow ?? 0));
     let bestMove = null;
+    let bestScore = -INF;
     let bestPv = [];
-    const volatile = depth >= 3 && (cheapVolatility(position) >= 52 || hasNearPromotion(position));
+    let complete = true;
 
-    for (let i = 0; i < moves.length; i++) {
-      if (this.timeUp()) break;
-      const move = moves[i];
+    for (const move of moves) {
+      if (this.timeUp()) { complete = false; break; }
       const next = position.makeMove(move);
-      const quiet = !(move.flags & FLAGS.CAPTURE) && !move.promotion;
-      const givesCheck = depth >= 3 && next.isInCheck();
-      let reduction = 0;
-      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !volatile) {
-        reduction = depth >= 5 && i >= 9 ? 2 : 1;
-      }
-
-      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0));
-      const reducedDepth = Math.max(0, fullDepth - reduction);
-      let childPv = [];
       let score;
+      let pv = [];
+      let exact = true;
 
-      pathHashes.push(position.hash);
-      if (i === 0) {
-        score = -this.negamax(next, reducedDepth, -beta, -alpha, ply + 1, childPv, pathHashes, true);
-        if (reduction && score > alpha && !this.timeUp()) {
-          childPv = [];
-          score = -this.negamax(next, fullDepth, -beta, -alpha, ply + 1, childPv, pathHashes, true);
-        }
+      if (bestMove == null) {
+        score = -this.negamax(next, depth - 1, -INF, INF, 1, pv, path);
       } else {
-        score = -this.negamax(next, reducedDepth, -alpha - 1, -alpha, ply + 1, childPv, pathHashes, true);
-        if (reduction && score > alpha && !this.timeUp()) {
-          childPv = [];
-          score = -this.negamax(next, fullDepth, -alpha - 1, -alpha, ply + 1, childPv, pathHashes, true);
-        }
-        if (score > alpha && score < beta && !this.timeUp()) {
-          childPv = [];
-          score = -this.negamax(next, fullDepth, -beta, -alpha, ply + 1, childPv, pathHashes, true);
+        const threshold = bestScore - verifyWindow;
+        score = -this.negamax(next, depth - 1, -threshold - 1, -threshold, 1, pv, path);
+        if (this.timeUp()) { complete = false; break; }
+        if (score >= threshold) {
+          pv = [];
+          score = -this.negamax(next, depth - 1, -INF, INF, 1, pv, path);
+        } else {
+          exact = false;
         }
       }
-      pathHashes.pop();
 
-      if (this.timeUp()) break;
-
-      if (score > bestScore) {
+      if (this.timeUp()) { complete = false; break; }
+      const line = { move, score, pv: [move, ...pv], personality: 0, exact };
+      lines.push(line);
+      if (exact && score > bestScore) {
         bestScore = score;
         bestMove = move;
-        bestPv = [move, ...childPv];
-      }
-      if (score > alpha) alpha = score;
-
-      if (alpha >= beta) {
-        this.cutoffs++;
-        if (quiet) {
-          const uci = moveToUci(move);
-          const killers = this.killers[ply] || [null, null];
-          if (killers[0] !== uci) this.killers[ply] = [uci, killers[0]];
-          this.history.set(uci, Math.min(50000, (this.history.get(uci) || 0) + depth * depth));
-        }
-        break;
+        bestPv = line.pv;
       }
     }
 
-    if (bestMove == null) return this.staticEval(position);
-    pvOut.push(...bestPv);
-
-    if (this.timeUp()) return bestScore;
-
-    const flag = bestScore <= originalAlpha ? 'upper' : bestScore >= originalBeta ? 'lower' : 'exact';
-    this.tt.set(key, {
-      depth,
-      score: scoreToTT(bestScore, ply),
-      flag,
-      move: moveToUci(bestMove),
+    lines.sort((a, b) => {
+      if (a.exact !== b.exact) return a.exact ? -1 : 1;
+      return b.score - a.score;
     });
-
-    if (this.tt.size > 180000) {
-      let removed = 0;
-      for (const oldKey of this.tt.keys()) {
-        this.tt.delete(oldKey);
-        if (++removed >= 36000) break;
-      }
+    if (bestMove == null && lines.length) {
+      bestMove = lines[0].move;
+      bestScore = lines[0].score;
+      bestPv = lines[0].pv;
     }
-
-    return bestScore;
+    return {
+      bestMove,
+      score: bestScore,
+      pv: bestPv,
+      lines,
+      complete: complete && lines.length === moves.length,
+    };
   }
 }
