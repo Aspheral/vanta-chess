@@ -18,8 +18,9 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 20
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -62,7 +63,7 @@ jobs:
         env:
           STRESS_GAMES: '50'
           STRESS_SHARD: ${{ matrix.shard }}
-          STRESS_SHARDS: '10'
+          STRESS_SHARDS: '25'
           STRESS_ELO: '1650'
           STRESS_MOVE_MS: '650'
           STRESS_MAX_PLIES: '120'
