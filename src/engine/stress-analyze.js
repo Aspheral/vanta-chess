@@ -10,6 +10,29 @@ const ANALYSIS_DEPTH = Number(process.env.STRESS_ANALYSIS_DEPTH || 9);
 const BLUNDER_CP = Number(process.env.STRESS_BLUNDER_CP || 180);
 const MISTAKE_CP = Number(process.env.STRESS_MISTAKE_CP || 90);
 
+function scoreFromInfo(lines) {
+  let chosen = null;
+  for (const line of lines) {
+    if (!line.startsWith('info ')) continue;
+    const depthMatch = line.match(/\bdepth\s+(\d+)/);
+    const scoreMatch = line.match(/\bscore\s+(cp|mate)\s+(-?\d+)/);
+    if (!scoreMatch) continue;
+    const depth = depthMatch ? Number(depthMatch[1]) : 0;
+    if (chosen && depth < chosen.depth) continue;
+    let score;
+    let mate = null;
+    if (scoreMatch[1] === 'cp') score = Number(scoreMatch[2]);
+    else {
+      mate = Number(scoreMatch[2]);
+      score = mate > 0
+        ? 100000 - Math.min(999, Math.abs(mate))
+        : -100000 + Math.min(999, Math.abs(mate));
+    }
+    chosen = { depth, score, mate };
+  }
+  return chosen || { depth: 0, score: 0, mate: null };
+}
+
 class Analyzer {
   constructor(binary = '/usr/games/stockfish') {
     this.proc = spawn(binary, [], { stdio: ['pipe','pipe','inherit'] });
@@ -54,19 +77,13 @@ class Analyzer {
     const bestLine = await this.waitFor(x => x.startsWith('bestmove '), 15000);
     const bestMove = bestLine.split(/\s+/)[1];
     const relevant = this.lines.slice(start);
-    let score = null;
-    let mate = null;
-    for (let i = relevant.length - 1; i >= 0; i--) {
-      const match = relevant[i].match(/\bscore\s+(cp|mate)\s+(-?\d+)/);
-      if (!match) continue;
-      if (match[1] === 'cp') score = Number(match[2]);
-      else {
-        mate = Number(match[2]);
-        score = mate > 0 ? 100000 - Math.min(999, Math.abs(mate)) : -100000 + Math.min(999, Math.abs(mate));
-      }
-      break;
-    }
-    return { score: score ?? 0, mate, bestMove: bestMove === '(none)' ? null : bestMove };
+    const scored = scoreFromInfo(relevant);
+    return {
+      score: scored.score,
+      mate: scored.mate,
+      depth: scored.depth,
+      bestMove: bestMove === '(none)' ? null : bestMove,
+    };
   }
   quit() {
     try { this.send('quit'); } catch {}
@@ -133,8 +150,13 @@ async function analyzeGame(analyzer, game) {
     if (meta) {
       const history = replay.history.map(x => x.uci);
       const best = await analyzer.eval(history);
-      const played = await analyzer.eval(history, uci);
-      const loss = Math.max(0, best.score - played.score);
+      // If unrestricted Stockfish chooses exactly Vanta's move, its objective
+      // loss is zero by definition. Re-searching the same root move can produce
+      // a different numeric score at finite depth because of hash/order effects;
+      // treating that as a blunder created impossible diagnostics such as
+      // "best Rf4, played Rf4, -99,000 cp".
+      const played = best.bestMove === uci ? best : await analyzer.eval(history, uci);
+      const loss = best.bestMove === uci ? 0 : Math.max(0, best.score - played.score);
       const move = replay.position.moveFromUci(uci);
       diagnostics.push({
         gameIndex: game.gameIndex,
