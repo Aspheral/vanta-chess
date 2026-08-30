@@ -3,14 +3,9 @@ import { colorOf, typeOf, opposite } from '../chess/constants.js';
 import { staticExchangeEval } from './tactics.js';
 
 const PROTECTED_TYPES = new Set(['n', 'b', 'r', 'q']);
-// A moved major-piece loss needs a much tighter floor than a full-piece hang.
-// In the Tjkhan77 loss, 16...Qd6 allowed 17.Rxd6 Rxd6. Legal SEE values that
-// as roughly a 400 cp net loss (queen for rook), which slipped below the old
-// 650 cp queen threshold even though it is an elementary practical blunder.
-// Keep enough room for search-led exchange sacrifices, but never permit a clean
-// queen-for-rook concession simply because the queen can be recaptured later.
 const MOVED_LOSS_FLOOR = Object.freeze({ n: 260, b: 260, r: 360, q: 300 });
 export const AVOIDABLE_LOSS_FLOOR = 110;
+const SAFETY_RESCUE_WINDOW = 140;
 
 function hasImmediateMate(position) {
   for (const move of position.legalMoves()) {
@@ -67,19 +62,12 @@ export function ignoredAttackedPieceLoss(position, move, seeMemo = new Map()) {
 
 /**
  * Catch a different family of blunder: moving a valuable piece onto a square
- * where the opponent can simply take it. The first August seatbelt only
- * watched pieces that were attacked before our move, so a checking queen move
- * such as ...Qxb2+ could be considered forcing even when Kxb2 was legal.
- *
- * Checks are NOT exempt here. If the opponent can answer the check by taking
- * the moved piece, that reply is exactly what must be seen. We only waive the
- * loss when accepting the sacrifice gives Vanta an immediate forced mate.
+ * where the opponent can simply take it.
  */
 export function movedPieceCaptureLoss(position, move, seeMemo = new Map()) {
   if (!move || !PROTECTED_TYPES.has(typeOf(move.piece))) return 0;
   const after = position.makeMove(move);
 
-  // Never suppress a move that is already checkmate.
   if (after.isInCheck() && after.legalMoves().length === 0) return 0;
 
   let rootGain = 0;
@@ -93,9 +81,7 @@ export function movedPieceCaptureLoss(position, move, seeMemo = new Map()) {
     if (reply.to !== move.to || !(reply.flags & FLAGS.CAPTURE)) continue;
     const afterReply = after.makeMove(reply);
 
-    // Preserve simple, sound mating sacrifices. Longer combinations remain
-    // search-led, but a naked queen/rook donation no longer gets a free pass
-    // merely because the move gave check.
+    // Preserve simple, sound mating sacrifices.
     if (hasImmediateMate(afterReply)) continue;
 
     const opponentGain = staticExchangeEval(after, reply, seeMemo);
@@ -106,9 +92,12 @@ export function movedPieceCaptureLoss(position, move, seeMemo = new Map()) {
 }
 
 /**
- * Exclude clearly avoidable root blunders before iterative deepening. If every
- * move is unsafe, exclusions are disabled so forced-loss positions remain
- * search-authoritative.
+ * Classify root moves that deserve practical verification.
+ *
+ * IMPORTANT: these are candidates for a post-search seatbelt, not moves that
+ * are automatically forbidden. The 1650 stress audit found that hard root
+ * exclusions could remove the objectively best tactical defense and literally
+ * force Vanta into a mating line. Search must remain authoritative.
  */
 export function practicalSafetyExclusions(position, options = {}) {
   if (position.isInCheck()) return [];
@@ -144,28 +133,96 @@ export function practicalSafetyExclusions(position, options = {}) {
   return unsafe;
 }
 
-/** Search with the practical root seatbelt applied. */
+function rebuildPv(position, pvUci = []) {
+  const pv = [];
+  let current = position;
+  for (const uci of pvUci) {
+    const move = current.moveFromUci(uci);
+    if (!move) break;
+    pv.push(move);
+    current = current.makeMove(move);
+  }
+  return pv;
+}
+
+/**
+ * Search every legal root move first, then use the practical detector only as
+ * a bounded post-search rescue. This is intentionally different from the old
+ * implementation, which pre-excluded every heuristic hazard before alpha-beta.
+ *
+ * If the searched choice is flagged, a clearly safer candidate may replace it
+ * only when that candidate is already within a small objective window. A
+ * tactical sacrifice or defensive resource that search values substantially
+ * higher therefore survives the seatbelt.
+ */
 export function searchWithPracticalSafety(engine, position, options = {}) {
   const automatic = practicalSafetyExclusions(position, options);
-  if (!automatic.length) {
-    const result = engine.search(position, options);
+  const result = engine.search(position, options);
+
+  if (!automatic.length || !result.move) {
     return {
       ...result,
-      practicalSafety: { triggered: false, exclusions: [] },
+      practicalSafety: { triggered: false, rescued: false, exclusions: automatic },
     };
   }
 
-  const excludeMoves = [
-    ...new Set([
-      ...(options.excludeMoves || []),
-      ...automatic.map(item => item.uci),
-    ]),
-  ];
-  const result = engine.search(position, { ...options, excludeMoves });
+  const hazards = new Map(automatic.map(item => [item.uci, item]));
+  const selectedUci = moveToUci(result.move);
+  const selectedHazard = hazards.get(selectedUci);
+
+  if (!selectedHazard) {
+    return {
+      ...result,
+      practicalSafety: { triggered: false, rescued: false, exclusions: automatic },
+    };
+  }
+
+  const objective = result.objectiveScore ?? result.score ?? 0;
+  const candidates = (result.candidates || [])
+    .filter(candidate => candidate.uci !== selectedUci)
+    .filter(candidate => !hazards.has(candidate.uci))
+    .filter(candidate => candidate.exact !== false)
+    .filter(candidate => candidate.score >= objective - SAFETY_RESCUE_WINDOW)
+    .sort((a, b) => b.score - a.score);
+
+  const rescue = candidates[0];
+  if (!rescue) {
+    return {
+      ...result,
+      practicalSafety: {
+        triggered: true,
+        rescued: false,
+        selectedHazard,
+        exclusions: automatic,
+      },
+    };
+  }
+
+  const move = position.moveFromUci(rescue.uci);
+  if (!move) {
+    return {
+      ...result,
+      practicalSafety: {
+        triggered: true,
+        rescued: false,
+        selectedHazard,
+        exclusions: automatic,
+      },
+    };
+  }
+
+  const pv = rebuildPv(position, rescue.pv || [rescue.uci]);
   return {
     ...result,
+    move,
+    score: rescue.score + (rescue.personality || 0),
+    objectiveScore: rescue.score,
+    pv: pv.length ? pv : [move],
     practicalSafety: {
       triggered: true,
+      rescued: true,
+      selectedHazard,
+      rescue: { uci: rescue.uci, score: rescue.score },
       exclusions: automatic,
     },
   };
