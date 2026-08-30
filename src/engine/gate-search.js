@@ -1,14 +1,18 @@
-import { FLAGS, moveToUci } from '../chess/position.js';
+import { FLAGS, Position, moveToUci } from '../chess/position.js';
+import { PIECE_VALUES, colorOf, opposite, typeOf } from '../chess/constants.js';
 import { MATE_SCORE } from './evaluation.js';
-import { StrongSearchEngine } from './strong-search.js';
+import { CompetitiveSearchEngine } from './competitive-search.js';
+import { cheapVolatility, hasNearPromotion } from './tactics.js';
 
 const INF = 1_000_000;
+const MATE_TT_BOUND = MATE_SCORE - 1000;
 
 function rootCap(depth) {
   if (depth <= 3) return Infinity;
-  if (depth === 4) return 16;
-  if (depth === 5) return 12;
-  return 8;
+  if (depth === 4) return 12;
+  if (depth === 5) return 8;
+  if (depth === 6) return 6;
+  return 5;
 }
 
 function isForcingRootMove(position, move) {
@@ -16,27 +20,69 @@ function isForcingRootMove(position, move) {
   return position.makeMove(move).isInCheck();
 }
 
+function nonPawnMaterial(position, color) {
+  let total = 0;
+  for (const piece of position.board) {
+    if (!piece || colorOf(piece) !== color) continue;
+    const t = typeOf(piece);
+    if (t === 'p' || t === 'k') continue;
+    total += PIECE_VALUES[t] || 0;
+  }
+  return total;
+}
+
+function nullPosition(position) {
+  return new Position({
+    board: position.board,
+    turn: opposite(position.turn),
+    castling: position.castling,
+    epSquare: null,
+    halfmove: position.halfmove + 1,
+    fullmove: position.fullmove + (position.turn === 'b' ? 1 : 0),
+  });
+}
+
+function scoreToTT(score, ply) {
+  if (score > MATE_TT_BOUND) return score + ply;
+  if (score < -MATE_TT_BOUND) return score - ply;
+  return score;
+}
+
+function scoreFromTT(score, ply) {
+  if (score > MATE_TT_BOUND) return score - ply;
+  if (score < -MATE_TT_BOUND) return score + ply;
+  return score;
+}
+
+function allowsImmediateMate(position, move) {
+  if (!move) return false;
+  const after = position.makeMove(move);
+  for (const reply of after.legalMoves()) {
+    const next = after.makeMove(reply);
+    if (next.isInCheck() && next.legalMoves().length === 0) return true;
+  }
+  return false;
+}
+
 /**
  * Search variant dedicated to the 1650 literal-win gate.
  *
- * Vanta's primary 650 ms bottleneck is root breadth. It was spending most of
- * the clock re-searching every legal root move at every iterative-deepening
- * level, then dying with only depth 2-3 completed. This engine verifies every
- * legal move through depth three, then progressively narrows only the deeper
- * iterations to the candidates that survived that real search. A few forcing
- * moves are retained even when they fall outside the cap.
+ * Every legal root move is verified through depth three. Deeper iterations
+ * progressively narrow to the candidates that survived that search, while
+ * forcing moves remain eligible. The full depth-three root set is retained as
+ * an emergency mate-rescue pool, so narrowing can never make a shallow ranking
+ * error irreversible.
  *
- * Unlike the old practical-safety filter, nothing is discarded before it has
- * actually been searched. If a narrowed deeper iteration times out, the normal
- * SearchEngine contract automatically falls back to the last fully completed
- * broad iteration.
+ * Interior search adds conservative null-move pruning, low-depth futility and
+ * less fragmented TT keys. These are deliberately disabled in check, near the
+ * fifty-move boundary and in low-material positions where zugzwang is common.
  */
-export class GateSearchEngine extends StrongSearchEngine {
+export class GateSearchEngine extends CompetitiveSearchEngine {
   search(position, options = {}) {
-    // rootOrder is useful inside one iterative-deepening search, but UCI strings
-    // from the previous *position* are arbitrary move-order noise. Keep the TT,
-    // history and killers persistent while resetting stale root ordering.
-    if (this.lastRootHash !== position.hash) this.rootOrder = [];
+    if (this.lastRootHash !== position.hash) {
+      this.rootOrder = [];
+      this.broadRootLines = [];
+    }
     this.lastRootHash = position.hash;
     return super.search(position, options);
   }
@@ -120,6 +166,11 @@ export class GateSearchEngine extends StrongSearchEngine {
       if (a.exact !== b.exact) return a.exact ? -1 : 1;
       return b.score - a.score;
     });
+
+    if (depth <= 3 && complete && lines.length === moves.length) {
+      this.broadRootLines = lines.map(line => ({ ...line, pv: [...line.pv] }));
+    }
+
     if (bestMove == null && lines.length) {
       bestMove = lines[0].move;
       bestScore = lines[0].score;
@@ -131,6 +182,205 @@ export class GateSearchEngine extends StrongSearchEngine {
       pv: bestPv,
       lines,
       complete: complete && lines.length === moves.length,
+    };
+  }
+
+  negamax(position, depth, alpha, beta, ply, pvOut, pathHashes, allowNull = true) {
+    this.nodes++;
+    if ((this.nodes & 511) === 0 && this.timeUp()) return this.staticEval(position);
+
+    let priorOccurrences = 0;
+    for (const hash of pathHashes) if (hash === position.hash) priorOccurrences++;
+    if (priorOccurrences >= 2) return this.repetitionUtility(position);
+    if (position.halfmove >= 100) return 0;
+
+    const inCheck = position.isInCheck();
+    if (inCheck && depth < 8) depth++;
+
+    // Halfmove count cannot affect a <=9 ply search until it is close to the
+    // fifty-move boundary. Collapsing the common range dramatically improves
+    // persistent TT reuse across transpositions and consecutive moves.
+    const halfmoveKey = position.halfmove >= 88 ? position.halfmove : 0;
+    const key = `g:${position.hash.toString()}:${halfmoveKey}`;
+    const tt = this.tt.get(key);
+    if (tt && tt.depth >= depth) {
+      this.ttHits++;
+      const ttScore = scoreFromTT(tt.score, ply);
+      if (tt.flag === 'exact') return ttScore;
+      if (tt.flag === 'lower') alpha = Math.max(alpha, ttScore);
+      else if (tt.flag === 'upper') beta = Math.min(beta, ttScore);
+      if (alpha >= beta) return ttScore;
+    }
+
+    if (position.isInsufficientMaterial()) return 0;
+    if (depth <= 0) return this.quiescence(position, alpha, beta, ply, 0);
+
+    const staticScore = this.staticEval(position);
+
+    // Conservative null-move pruning. Avoid check, pawn-only endings,
+    // near-fifty-move positions and mate windows, all of which are classic
+    // null-move failure zones.
+    if (
+      allowNull
+      && depth >= 3
+      && !inCheck
+      && position.halfmove < 88
+      && beta < MATE_TT_BOUND
+      && beta > -MATE_TT_BOUND
+      && nonPawnMaterial(position, position.turn) >= 500
+      && staticScore >= beta - 20
+    ) {
+      const reduction = depth >= 6 ? 3 : 2;
+      const nullDepth = Math.max(0, depth - 1 - reduction);
+      const nullScore = -this.negamax(
+        nullPosition(position),
+        nullDepth,
+        -beta,
+        -beta + 1,
+        ply + 1,
+        [],
+        pathHashes,
+        false,
+      );
+      if (!this.timeUp() && nullScore >= beta) return beta;
+    }
+
+    // Razoring converts obviously hopeless one-ply nodes into qsearch. The
+    // margin is intentionally wide because Vanta values tactical volatility.
+    if (depth === 1 && !inCheck && staticScore + 210 <= alpha) {
+      const q = this.quiescence(position, alpha, beta, ply, 0);
+      if (q <= alpha) return q;
+    }
+
+    const moves = this.orderMoves(position, position.legalMoves(), ply, tt?.move || null);
+    if (moves.length === 0) return inCheck ? -MATE_SCORE + ply : 0;
+
+    const originalAlpha = alpha;
+    const originalBeta = beta;
+    let bestScore = -INF;
+    let bestMove = null;
+    let bestPv = [];
+    const volatile = depth >= 3 && (cheapVolatility(position) >= 52 || hasNearPromotion(position));
+
+    for (let i = 0; i < moves.length; i++) {
+      if (this.timeUp()) break;
+      const move = moves[i];
+      const next = position.makeMove(move);
+      const quiet = !(move.flags & FLAGS.CAPTURE) && !move.promotion;
+      const needCheckInfo = quiet && (depth === 1 || depth >= 3);
+      const givesCheck = needCheckInfo && next.isInCheck();
+
+      // Low-depth futility/late-move pruning only removes quiet, non-checking
+      // moves when the static position is already well below alpha.
+      if (!inCheck && quiet && !givesCheck && !volatile) {
+        if (depth === 1 && i >= 3 && staticScore + 125 <= alpha) continue;
+        if (depth === 2 && i >= 12 && staticScore + 90 <= alpha) continue;
+      }
+
+      let reduction = 0;
+      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !volatile) {
+        reduction = depth >= 5 && i >= 9 ? 2 : 1;
+      }
+
+      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0));
+      const reducedDepth = Math.max(0, fullDepth - reduction);
+      let childPv = [];
+      let score;
+
+      pathHashes.push(position.hash);
+      if (i === 0) {
+        score = -this.negamax(next, reducedDepth, -beta, -alpha, ply + 1, childPv, pathHashes, true);
+        if (reduction && score > alpha && !this.timeUp()) {
+          childPv = [];
+          score = -this.negamax(next, fullDepth, -beta, -alpha, ply + 1, childPv, pathHashes, true);
+        }
+      } else {
+        score = -this.negamax(next, reducedDepth, -alpha - 1, -alpha, ply + 1, childPv, pathHashes, true);
+        if (reduction && score > alpha && !this.timeUp()) {
+          childPv = [];
+          score = -this.negamax(next, fullDepth, -alpha - 1, -alpha, ply + 1, childPv, pathHashes, true);
+        }
+        if (score > alpha && score < beta && !this.timeUp()) {
+          childPv = [];
+          score = -this.negamax(next, fullDepth, -beta, -alpha, ply + 1, childPv, pathHashes, true);
+        }
+      }
+      pathHashes.pop();
+
+      if (this.timeUp()) break;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = move;
+        bestPv = [move, ...childPv];
+      }
+      if (score > alpha) alpha = score;
+
+      if (alpha >= beta) {
+        this.cutoffs++;
+        if (quiet) {
+          const u = moveToUci(move);
+          const k = this.killers[ply] || [null, null];
+          if (k[0] !== u) this.killers[ply] = [u, k[0]];
+          this.history.set(u, Math.min(50000, (this.history.get(u) || 0) + depth * depth));
+        }
+        break;
+      }
+    }
+
+    if (bestMove == null) return this.staticEval(position);
+    pvOut.push(...bestPv);
+    if (this.timeUp()) return bestScore;
+
+    const flag = bestScore <= originalAlpha ? 'upper' : bestScore >= originalBeta ? 'lower' : 'exact';
+    this.tt.set(key, {
+      depth,
+      score: scoreToTT(bestScore, ply),
+      flag,
+      move: moveToUci(bestMove),
+    });
+
+    if (this.tt.size > 220000) {
+      let removed = 0;
+      for (const k of this.tt.keys()) {
+        this.tt.delete(k);
+        if (++removed >= 44000) break;
+      }
+    }
+
+    return bestScore;
+  }
+
+  personalitySelect(position, lines, bestFallback) {
+    const initial = super.personalitySelect(position, lines, bestFallback);
+    if (!initial?.move || !allowsImmediateMate(position, initial.move)) return initial;
+
+    const merged = [];
+    const seen = new Set();
+    for (const line of [...(lines || []), ...(this.broadRootLines || [])]) {
+      const uci = moveToUci(line.move);
+      if (seen.has(uci)) continue;
+      seen.add(uci);
+      if (allowsImmediateMate(position, line.move)) continue;
+      merged.push(line);
+    }
+    if (!merged.length) return initial;
+
+    merged.sort((a, b) => {
+      if ((a.exact !== false) !== (b.exact !== false)) return a.exact === false ? 1 : -1;
+      return b.score - a.score;
+    });
+    const pick = merged[0];
+    return {
+      move: pick.move,
+      score: pick.score,
+      objectiveScore: pick.score,
+      pv: pick.pv,
+      risk: 0,
+      mateRescue: {
+        from: moveToUci(initial.move),
+        to: moveToUci(pick.move),
+      },
     };
   }
 }
