@@ -30,7 +30,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y stockfish
           test -x /usr/games/stockfish
-      - name: Select persistent competitive production search path
+      - name: Select persistent lean production search path
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -38,7 +38,7 @@ jobs:
           s=p.read_text()
           s=s.replace(
               "import { SearchEngine } from './search.js';",
-              "import { CompetitiveSearchEngine as SearchEngine } from './competitive-search.js';",
+              "import { StrongSearchEngine as SearchEngine } from './strong-search.js';",
           )
           s=s.replace(
               "function productionVantaMove(game) {",
