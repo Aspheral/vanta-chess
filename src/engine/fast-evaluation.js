@@ -2,6 +2,10 @@ import { WHITE, PIECE_VALUES, colorOf, typeOf, rowCol } from '../chess/constants
 
 const CENTER_FILE = [3.5, 2.5, 1.5, 0.5, 0.5, 1.5, 2.5, 3.5];
 const CENTER_RANK = CENTER_FILE;
+const HOME = Object.freeze({
+  w: { knights: [57, 62], bishops: [58, 61], queen: 59, king: 60, castles: [58, 62] },
+  b: { knights: [1, 6], bishops: [2, 5], queen: 3, king: 4, castles: [2, 6] },
+});
 
 function sign(color) { return color === WHITE ? 1 : -1; }
 function advance(row, color) { return color === WHITE ? 6 - row : row - 1; }
@@ -85,6 +89,57 @@ function kingShield(board, kingSquare, color, phase) {
   return Math.round(shield * phase);
 }
 
+function openingDiscipline(position, piecesByColor, kings, phase) {
+  if (position.fullmove > 16 || phase < 0.45) return 0;
+  let score = 0;
+
+  for (const color of ['w', 'b']) {
+    const home = HOME[color];
+    const pieces = piecesByColor[color];
+    const s = sign(color);
+    let developed = 0;
+
+    for (const sq of pieces.knights) if (!home.knights.includes(sq)) developed++;
+    for (const sq of pieces.bishops) if (!home.bishops.includes(sq)) developed++;
+
+    let local = developed * 8;
+    const queenPiece = color === 'w' ? 'Q' : 'q';
+    if (position.board[home.queen] !== queenPiece && developed < 2 && position.fullmove <= 10) {
+      local -= (2 - developed) * 14;
+    }
+
+    const kingSq = kings[color];
+    if (home.castles.includes(kingSq)) {
+      local += 24;
+    } else if (position.fullmove >= 8) {
+      const rights = color === 'w' ? /[KQ]/ : /[kq]/;
+      const canCastle = rights.test(position.castling || '');
+      if (kingSq !== home.king) local -= 18;
+      else if (!canCastle) local -= 22;
+      else if (position.fullmove >= 11 && developed >= 2) local -= 7;
+    }
+
+    score += s * Math.round(local * phase);
+  }
+  return score;
+}
+
+function rookFileActivity(pawnsByColor, rooksByColor) {
+  const files = { w: Array(8).fill(0), b: Array(8).fill(0) };
+  for (const color of ['w', 'b']) for (const sq of pawnsByColor[color]) files[color][sq & 7]++;
+  let score = 0;
+  for (const color of ['w', 'b']) {
+    const enemy = color === 'w' ? 'b' : 'w';
+    let local = 0;
+    for (const sq of rooksByColor[color]) {
+      const file = sq & 7;
+      if (files[color][file] === 0) local += files[enemy][file] === 0 ? 13 : 7;
+    }
+    score += sign(color) * local;
+  }
+  return score;
+}
+
 /**
  * Search-hot-path evaluation. It intentionally avoids attack-map construction,
  * legal move generation, and nested exchange calculations. The richer public
@@ -97,6 +152,11 @@ export function fastEvaluate(position, perspective = position.turn) {
   const pawnsByColor = { w: [], b: [] };
   const bishops = { w: 0, b: 0 };
   const kings = { w: -1, b: -1 };
+  const piecesByColor = {
+    w: { knights: [], bishops: [] },
+    b: { knights: [], bishops: [] },
+  };
+  const rooksByColor = { w: [], b: [] };
   let whiteScore = 0;
 
   for (let sq = 0; sq < 64; sq++) {
@@ -109,7 +169,11 @@ export function fastEvaluate(position, perspective = position.turn) {
     whiteScore += s * (PIECE_VALUES[type] || 0);
     whiteScore += s * pieceActivity(type, row, file, color, phase);
     if (type === 'p') pawnsByColor[color].push(sq);
-    else if (type === 'b') bishops[color]++;
+    else if (type === 'n') piecesByColor[color].knights.push(sq);
+    else if (type === 'b') {
+      bishops[color]++;
+      piecesByColor[color].bishops.push(sq);
+    } else if (type === 'r') rooksByColor[color].push(sq);
     else if (type === 'k') kings[color] = sq;
   }
 
@@ -118,6 +182,8 @@ export function fastEvaluate(position, perspective = position.turn) {
   whiteScore += pawnStructure(board, pawnsByColor);
   whiteScore += kingShield(board, kings.w, 'w', phase);
   whiteScore -= kingShield(board, kings.b, 'b', phase);
+  whiteScore += openingDiscipline(position, piecesByColor, kings, phase);
+  whiteScore += rookFileActivity(pawnsByColor, rooksByColor);
 
   // Small side-to-move tempo. Keep it tiny so material/tactics dominate.
   whiteScore += position.turn === WHITE ? 7 : -7;
