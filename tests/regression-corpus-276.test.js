@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Position, FLAGS, moveToUci } from '../src/chess/position.js';
 import { fastEvaluate } from '../src/engine/fast-evaluation.js';
 import { staticExchangeEval } from '../src/engine/tactics.js';
-import { GateSearchEngine } from '../src/engine/gate-search.js';
+import { ForcingGateSearchEngine } from '../src/engine/forcing-gate-search.js';
 
 // Deterministic legal-position generator. Each seed walks a different line of
 // the actual move generator, giving the corpus broad coverage without storing
@@ -86,14 +86,14 @@ for (let i = 1; i <= 40; i++) {
   });
 }
 
-// 25 selective-search regressions. These specifically exercise the stress
-// gate engine introduced after the 1650 audit. A shallow deterministic search
-// must always return a move legal in the exact root position, even as its beam,
-// null-move path, TT, and emergency rescue machinery evolve.
+// 25 selective-search regressions. These specifically exercise the forcing
+// stress-gate engine. A shallow deterministic search must always return a move
+// legal in the exact root position, even as its beam, null-move path, TT,
+// chained-check frontier, and emergency rescue machinery evolve.
 for (let i = 1; i <= 25; i++) {
   test(`276 corpus gate-search returns legal root move ${i}/25`, () => {
     const position = corpusPosition(0x4000 + i * 3253, 8 + (i % 19));
-    const engine = new GateSearchEngine({
+    const engine = new ForcingGateSearchEngine({
       maxDepth: 2,
       moveTimeMs: 45,
       nodeLimit: 9000,
