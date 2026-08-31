@@ -3,16 +3,11 @@ import assert from 'node:assert/strict';
 import { Position, FLAGS, moveToUci } from '../src/chess/position.js';
 import { fastEvaluate } from '../src/engine/fast-evaluation.js';
 import { staticExchangeEval } from '../src/engine/tactics.js';
-import { GateSearchEngine } from '../src/engine/gate-search.js';
+import { StableGateSearchEngine } from '../src/engine/stable-gate-search.js';
 
-// Deterministic legal-position generator. Each seed walks a different line of
-// the actual move generator, giving the corpus broad coverage without storing
-// brittle expected-best-move snapshots. We deliberately stop one ply before a
-// terminal position so every generated state remains searchable.
 function corpusPosition(seed, plies = 18) {
   let position = Position.start();
   let state = (seed ^ 0x9e3779b9) >>> 0;
-
   for (let ply = 0; ply < plies; ply++) {
     const legal = position.legalMoves();
     if (!legal.length) break;
@@ -76,7 +71,7 @@ for (let i = 1; i <= 40; i++) {
 for (let i = 1; i <= 25; i++) {
   test(`276 corpus gate-search returns legal root move ${i}/25`, () => {
     const position = corpusPosition(0x4000 + i * 3253, 8 + (i % 19));
-    const engine = new GateSearchEngine({
+    const engine = new StableGateSearchEngine({
       maxDepth: 2,
       moveTimeMs: 45,
       nodeLimit: 9000,
