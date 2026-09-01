@@ -18,6 +18,7 @@ function normalRootCap(depth) {
  * Preserve candidates already admitted by the normal depth-three audition.
  * Critical positions stop collapsing that 10-move beam as aggressively, while
  * normal positions pay exactly the same root-search cost as GateSearchEngine.
+ * The 1650 A/B therefore changes candidate retention only, not the node gate.
  */
 export function criticalRootCap(depth, criticality = 0) {
   const base = normalRootCap(depth);
