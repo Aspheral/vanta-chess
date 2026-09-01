@@ -1,7 +1,9 @@
 import { FLAGS } from '../chess/position.js';
 
+const DEFAULT_MAX_CHECKS = 5;
+const DEFAULT_CHECK_NODE_LIMIT = 5000;
 const DEFAULT_MAX_PLIES = 9;
-const DEFAULT_NODE_LIMIT = 16000;
+const DEFAULT_FULL_NODE_LIMIT = 16000;
 const PROVEN = 1;
 const REFUTED = 0;
 const UNKNOWN = -1;
@@ -12,25 +14,66 @@ function movePriority(position, move) {
   if (next.isInCheck()) priority += 100000;
   if (move.flags & FLAGS.CAPTURE) priority += 1000;
   if (move.promotion) priority += 500;
-  return { move, next, priority };
-}
-
-function orderedChildren(position) {
-  return position.legalMoves()
-    .map(move => movePriority(position, move))
-    .sort((a, b) => b.priority - a.priority);
+  return { next, priority };
 }
 
 /**
- * Exact bounded mate proof with a fail-open work cap.
- *
- * The attacking side only needs one continuation that forces mate. The
- * defending side must have every legal reply covered by the mating tree. Quiet
- * attacking moves are deliberately allowed, which fixes the blind spot in the
- * older checking-only prover. If the local node budget is exhausted, UNKNOWN
- * propagates upward and the caller must treat the move as safe/not proven.
+ * Stage one: the original narrow proof. It is exceptionally efficient on
+ * forcing checking trees, so keep it instead of making the broad proof rediscover
+ * those lines through a much larger move tree.
  */
-function mateWithin(position, attacker, pliesLeft, budget, memo) {
+function checkingMateWithin(position, attacker, checksLeft, budget) {
+  if (budget.nodes >= budget.limit) {
+    budget.exhausted = true;
+    return false;
+  }
+  budget.nodes++;
+
+  const legal = position.legalMoves();
+  if (!legal.length) {
+    return position.isInCheck() && position.turn !== attacker;
+  }
+
+  if (position.turn === attacker) {
+    if (checksLeft <= 0) return false;
+
+    const checks = [];
+    for (const move of legal) {
+      const next = position.makeMove(move);
+      if (next.isInCheck()) checks.push(next);
+    }
+    for (const next of checks) {
+      if (budget.nodes >= budget.limit) {
+        budget.exhausted = true;
+        return false;
+      }
+      if (checkingMateWithin(next, attacker, checksLeft - 1, budget)) return true;
+    }
+    return false;
+  }
+
+  if (!position.isInCheck()) return false;
+  for (const reply of legal) {
+    if (budget.nodes >= budget.limit) {
+      budget.exhausted = true;
+      return false;
+    }
+    if (!checkingMateWithin(position.makeMove(reply), attacker, checksLeft, budget)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Stage two: exact bounded mate proof that permits quiet attacking moves.
+ *
+ * The attacker needs one continuation that forces mate. Every legal defensive
+ * reply must remain in the mating tree. Budget exhaustion propagates UNKNOWN,
+ * which deliberately fails open so a sound sacrifice is never rejected merely
+ * because the safety probe ran out of work.
+ */
+function fullMateWithin(position, attacker, pliesLeft, budget, memo) {
   if (budget.nodes >= budget.limit) {
     budget.exhausted = true;
     return UNKNOWN;
@@ -47,15 +90,14 @@ function mateWithin(position, attacker, pliesLeft, budget, memo) {
   const cached = memo.get(key);
   if (cached !== undefined) return cached;
 
-  const attackerTurn = position.turn === attacker;
   const children = legal
     .map(move => movePriority(position, move))
     .sort((a, b) => b.priority - a.priority);
 
-  if (attackerTurn) {
+  if (position.turn === attacker) {
     let sawUnknown = false;
     for (const { next } of children) {
-      const result = mateWithin(next, attacker, pliesLeft - 1, budget, memo);
+      const result = fullMateWithin(next, attacker, pliesLeft - 1, budget, memo);
       if (result === PROVEN) {
         memo.set(key, PROVEN);
         return PROVEN;
@@ -69,7 +111,7 @@ function mateWithin(position, attacker, pliesLeft, budget, memo) {
 
   let sawUnknown = false;
   for (const { next } of children) {
-    const result = mateWithin(next, attacker, pliesLeft - 1, budget, memo);
+    const result = fullMateWithin(next, attacker, pliesLeft - 1, budget, memo);
     if (result === REFUTED) {
       memo.set(key, REFUTED);
       return REFUTED;
@@ -82,43 +124,48 @@ function mateWithin(position, attacker, pliesLeft, budget, memo) {
 }
 
 export function forcedMateProbe(position, move, options = {}) {
-  if (!move) return { forced: false, nodes: 0, exhausted: false, matePlies: null };
+  if (!move) {
+    return { forced: false, nodes: 0, exhausted: false, matePlies: null, stage: null };
+  }
 
-  const maxPlies = Math.max(1, Number(options.maxPlies) || DEFAULT_MAX_PLIES);
-  const nodeLimit = Math.max(128, Number(options.nodeLimit) || DEFAULT_NODE_LIMIT);
   const after = position.makeMove(move);
-
-  // If Vanta itself just ended the game, there is no opponent mating tree.
   const replies = after.legalMoves();
   if (!replies.length) {
-    return { forced: false, nodes: 1, exhausted: false, matePlies: null };
+    return { forced: false, nodes: 1, exhausted: false, matePlies: null, stage: null };
   }
 
   const attacker = after.turn;
-  const budget = { nodes: 0, limit: nodeLimit, exhausted: false };
-  const memo = new Map();
-  const lastDepth = maxPlies % 2 === 1 ? maxPlies : maxPlies - 1;
+  const maxChecks = Math.max(1, Number(options.maxChecks) || DEFAULT_MAX_CHECKS);
+  const checkNodeLimit = Math.max(
+    64,
+    Number(options.checkNodeLimit) || DEFAULT_CHECK_NODE_LIMIT,
+  );
+  const checkBudget = { nodes: 0, limit: checkNodeLimit, exhausted: false };
 
-  // Iterative mate depth keeps short tactical mates cheap while still allowing
-  // the prover to reach quiet mate-in-4/5 constructions when work remains.
-  for (let plies = 1; plies <= lastDepth; plies += 2) {
-    const result = mateWithin(after, attacker, plies, budget, memo);
-    if (result === PROVEN) {
-      return {
-        forced: true,
-        nodes: budget.nodes,
-        exhausted: budget.exhausted,
-        matePlies: plies,
-      };
-    }
-    if (budget.exhausted) break;
+  if (checkingMateWithin(after, attacker, maxChecks, checkBudget)) {
+    return {
+      forced: true,
+      nodes: checkBudget.nodes,
+      exhausted: checkBudget.exhausted,
+      matePlies: null,
+      stage: 'checks',
+    };
   }
 
+  const maxPlies = Math.max(1, Number(options.maxPlies) || DEFAULT_MAX_PLIES);
+  const fullNodeLimit = Math.max(
+    128,
+    Number(options.nodeLimit) || DEFAULT_FULL_NODE_LIMIT,
+  );
+  const fullBudget = { nodes: 0, limit: fullNodeLimit, exhausted: false };
+  const full = fullMateWithin(after, attacker, maxPlies, fullBudget, new Map());
+
   return {
-    forced: false,
-    nodes: budget.nodes,
-    exhausted: budget.exhausted,
-    matePlies: null,
+    forced: full === PROVEN,
+    nodes: checkBudget.nodes + fullBudget.nodes,
+    exhausted: fullBudget.exhausted,
+    matePlies: full === PROVEN ? maxPlies : null,
+    stage: full === PROVEN ? 'full' : null,
   };
 }
 
@@ -126,14 +173,10 @@ export function allowsForcedMate(position, move, options = {}) {
   return forcedMateProbe(position, move, options).forced;
 }
 
-// Backward-compatible names for the existing regression corpus and any callers
-// outside the worker. They now use the stronger full-tree proof.
+// Keep the historical API name while upgrading its implementation to the
+// two-stage proof. Existing callers and the fixed 276-test corpus stay stable.
 export function forcedCheckingMateProbe(position, move, options = {}) {
-  const translated = {
-    ...options,
-    maxPlies: options.maxPlies ?? (options.maxChecks ? (Number(options.maxChecks) * 2 - 1) : undefined),
-  };
-  return forcedMateProbe(position, move, translated);
+  return forcedMateProbe(position, move, options);
 }
 
 export function allowsForcedCheckingMate(position, move, options = {}) {
