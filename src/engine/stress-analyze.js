@@ -149,6 +149,7 @@ async function analyzeGame(analyzer, game) {
     const meta = vantaByPly.get(ply);
     if (meta) {
       const history = replay.history.map(x => x.uci);
+      const fen = replay.position.toFEN();
       const best = await analyzer.eval(history);
       // If unrestricted Stockfish chooses exactly Vanta's move, its objective
       // loss is zero by definition. Re-searching the same root move can produce
@@ -164,12 +165,15 @@ async function analyzeGame(analyzer, game) {
         result: game.result,
         vantaColor: game.vantaColor,
         ply,
+        fen,
         uci,
         piece: move ? typeOf(move.piece) : meta.piece,
         capture: Boolean(move?.captured),
         stockfishBest: best.bestMove,
         bestScore: best.score,
+        bestMate: best.mate,
         playedScore: played.score,
+        playedMate: played.mate,
         lossCp: loss,
         severity: loss >= BLUNDER_CP ? 'blunder' : loss >= MISTAKE_CP ? 'mistake' : 'ok',
         depth: meta.depth,
@@ -190,6 +194,7 @@ async function analyzeGame(analyzer, game) {
 
 function classify(diag) {
   if (diag.lossCp < MISTAKE_CP) return 'small';
+  if (diag.playedMate !== null && diag.playedMate < 0) return 'mate-horizon';
   if (diag.selectedRisk >= 700) return 'known-tactical-risk';
   if (diag.piece === 'q' && diag.ply <= 20) return 'early-queen';
   if (diag.capture) return 'capture-calculation';
