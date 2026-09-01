@@ -1,64 +1,139 @@
-const DEFAULT_MAX_CHECKS = 5;
-const DEFAULT_NODE_LIMIT = 5000;
+import { FLAGS } from '../chess/position.js';
+
+const DEFAULT_MAX_PLIES = 9;
+const DEFAULT_NODE_LIMIT = 16000;
+const PROVEN = 1;
+const REFUTED = 0;
+const UNKNOWN = -1;
+
+function movePriority(position, move) {
+  const next = position.makeMove(move);
+  let priority = 0;
+  if (next.isInCheck()) priority += 100000;
+  if (move.flags & FLAGS.CAPTURE) priority += 1000;
+  if (move.promotion) priority += 500;
+  return { move, next, priority };
+}
+
+function orderedChildren(position) {
+  return position.legalMoves()
+    .map(move => movePriority(position, move))
+    .sort((a, b) => b.priority - a.priority);
+}
 
 /**
- * Prove a mate using checking moves only.
+ * Exact bounded mate proof with a fail-open work cap.
  *
- * This is intentionally a proof, not an evaluation heuristic. On the attacking
- * side's turns we consider only legal moves that give check. On the defender's
- * turns every legal evasion has to remain inside the mating tree. If the local
- * node budget is exhausted the answer is "not proven", so the seatbelt cannot
- * reject a sound sacrifice merely because the probe ran out of work.
+ * The attacking side only needs one continuation that forces mate. The
+ * defending side must have every legal reply covered by the mating tree. Quiet
+ * attacking moves are deliberately allowed, which fixes the blind spot in the
+ * older checking-only prover. If the local node budget is exhausted, UNKNOWN
+ * propagates upward and the caller must treat the move as safe/not proven.
  */
-function attackerForcesCheckingMate(position, attacker, checksLeft, budget) {
-  if (budget.nodes >= budget.limit) return false;
+function mateWithin(position, attacker, pliesLeft, budget, memo) {
+  if (budget.nodes >= budget.limit) {
+    budget.exhausted = true;
+    return UNKNOWN;
+  }
   budget.nodes++;
 
   const legal = position.legalMoves();
   if (!legal.length) {
-    return position.isInCheck() && position.turn !== attacker;
+    return position.isInCheck() && position.turn !== attacker ? PROVEN : REFUTED;
   }
+  if (pliesLeft <= 0) return REFUTED;
 
-  if (position.turn === attacker) {
-    if (checksLeft <= 0) return false;
+  const key = `${position.hash}:${pliesLeft}`;
+  const cached = memo.get(key);
+  if (cached !== undefined) return cached;
 
-    for (const move of legal) {
-      if (budget.nodes >= budget.limit) return false;
-      const next = position.makeMove(move);
-      if (!next.isInCheck()) continue;
-      if (attackerForcesCheckingMate(next, attacker, checksLeft - 1, budget)) return true;
+  const attackerTurn = position.turn === attacker;
+  const children = legal
+    .map(move => movePriority(position, move))
+    .sort((a, b) => b.priority - a.priority);
+
+  if (attackerTurn) {
+    let sawUnknown = false;
+    for (const { next } of children) {
+      const result = mateWithin(next, attacker, pliesLeft - 1, budget, memo);
+      if (result === PROVEN) {
+        memo.set(key, PROVEN);
+        return PROVEN;
+      }
+      if (result === UNKNOWN) sawUnknown = true;
     }
-    return false;
+    if (sawUnknown) return UNKNOWN;
+    memo.set(key, REFUTED);
+    return REFUTED;
   }
 
-  // A checking-only proof can reach a defender turn only while that defender
-  // is in check. If the attack ever needs a quiet setup move, this conservative
-  // probe declines to call it forced mate.
-  if (!position.isInCheck()) return false;
-
-  for (const reply of legal) {
-    if (budget.nodes >= budget.limit) return false;
-    if (!attackerForcesCheckingMate(position.makeMove(reply), attacker, checksLeft, budget)) {
-      return false;
+  let sawUnknown = false;
+  for (const { next } of children) {
+    const result = mateWithin(next, attacker, pliesLeft - 1, budget, memo);
+    if (result === REFUTED) {
+      memo.set(key, REFUTED);
+      return REFUTED;
     }
+    if (result === UNKNOWN) sawUnknown = true;
   }
-  return true;
+  if (sawUnknown) return UNKNOWN;
+  memo.set(key, PROVEN);
+  return PROVEN;
 }
 
-export function forcedCheckingMateProbe(position, move, options = {}) {
-  if (!move) return { forced: false, nodes: 0 };
+export function forcedMateProbe(position, move, options = {}) {
+  if (!move) return { forced: false, nodes: 0, exhausted: false, matePlies: null };
 
-  const maxChecks = Math.max(1, Number(options.maxChecks) || DEFAULT_MAX_CHECKS);
-  const nodeLimit = Math.max(64, Number(options.nodeLimit) || DEFAULT_NODE_LIMIT);
+  const maxPlies = Math.max(1, Number(options.maxPlies) || DEFAULT_MAX_PLIES);
+  const nodeLimit = Math.max(128, Number(options.nodeLimit) || DEFAULT_NODE_LIMIT);
   const after = position.makeMove(move);
 
-  // If Vanta just delivered mate, there is obviously no opponent mating tree.
+  // If Vanta itself just ended the game, there is no opponent mating tree.
   const replies = after.legalMoves();
-  if (!replies.length) return { forced: false, nodes: 1 };
+  if (!replies.length) {
+    return { forced: false, nodes: 1, exhausted: false, matePlies: null };
+  }
 
-  const budget = { nodes: 0, limit: nodeLimit };
-  const forced = attackerForcesCheckingMate(after, after.turn, maxChecks, budget);
-  return { forced, nodes: budget.nodes };
+  const attacker = after.turn;
+  const budget = { nodes: 0, limit: nodeLimit, exhausted: false };
+  const memo = new Map();
+  const lastDepth = maxPlies % 2 === 1 ? maxPlies : maxPlies - 1;
+
+  // Iterative mate depth keeps short tactical mates cheap while still allowing
+  // the prover to reach quiet mate-in-4/5 constructions when work remains.
+  for (let plies = 1; plies <= lastDepth; plies += 2) {
+    const result = mateWithin(after, attacker, plies, budget, memo);
+    if (result === PROVEN) {
+      return {
+        forced: true,
+        nodes: budget.nodes,
+        exhausted: budget.exhausted,
+        matePlies: plies,
+      };
+    }
+    if (budget.exhausted) break;
+  }
+
+  return {
+    forced: false,
+    nodes: budget.nodes,
+    exhausted: budget.exhausted,
+    matePlies: null,
+  };
+}
+
+export function allowsForcedMate(position, move, options = {}) {
+  return forcedMateProbe(position, move, options).forced;
+}
+
+// Backward-compatible names for the existing regression corpus and any callers
+// outside the worker. They now use the stronger full-tree proof.
+export function forcedCheckingMateProbe(position, move, options = {}) {
+  const translated = {
+    ...options,
+    maxPlies: options.maxPlies ?? (options.maxChecks ? (Number(options.maxChecks) * 2 - 1) : undefined),
+  };
+  return forcedMateProbe(position, move, translated);
 }
 
 export function allowsForcedCheckingMate(position, move, options = {}) {
