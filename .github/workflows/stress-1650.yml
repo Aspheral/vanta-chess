@@ -31,10 +31,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y stockfish
           test -x /usr/games/stockfish
-      - name: Select persistent gate search path
+      - name: Select persistent node-budgeted gate path
+        env:
+          VANTA_GATE_NODES: '30000'
+          STOCKFISH_GATE_NODES: '800000'
         run: |
           python - <<'PY'
+          import os
           from pathlib import Path
+
+          vanta_nodes = int(os.environ['VANTA_GATE_NODES'])
+          stockfish_nodes = int(os.environ['STOCKFISH_GATE_NODES'])
           p=Path('src/engine/stress-match.js')
           s=p.read_text()
           s=s.replace(
@@ -44,6 +51,18 @@ jobs:
           s=s.replace(
               "function productionVantaMove(game) {",
               "function productionVantaMove(game, engine) {",
+          )
+          s=s.replace(
+              "    nodeLimit: profile.nodeLimit,",
+              f"    nodeLimit: {vanta_nodes},",
+          )
+          s=s.replace(
+              "    softTimeMs: Math.min(MOVE_TIME_MS, profile.softTimeMs),\n    hardTimeMs: MOVE_TIME_MS,",
+              "    softTimeMs: 60000,\n    hardTimeMs: 60000,",
+          )
+          s=s.replace(
+              "    this.send(`go movetime ${MOVE_TIME_MS}`);\n    const line = await this.waitFor(text => text.startsWith('bestmove '), MOVE_TIME_MS + 8000);",
+              f"    this.send('go nodes {stockfish_nodes}');\n    const line = await this.waitFor(text => text.startsWith('bestmove '), 30000);",
           )
           s=s.replace(
               "  const run = excludeMoves => searchWithPracticalSafety(\n    new SearchEngine(config),\n    position,",
@@ -56,6 +75,14 @@ jobs:
           s=s.replace(
               "      const result = productionVantaMove(game);",
               "      const result = productionVantaMove(game, engine);",
+          )
+          s=s.replace(
+              "    console.log(`Shard ${SHARD + 1}/${SHARDS}: ${mine.length} of ${GAMES} games, ${MOVE_TIME_MS} ms/move`);",
+              f"    console.log(`Shard ${{SHARD + 1}}/${{SHARDS}}: ${{mine.length}} of ${{GAMES}} games, node gate Vanta {vanta_nodes} / Stockfish {stockfish_nodes}`);",
+          )
+          s=s.replace(
+              "    config: { games: GAMES, shard: SHARD, shards: SHARDS, stockfishElo: STOCKFISH_ELO, moveTimeMs: MOVE_TIME_MS, maxPlies: MAX_PLIES, seed: SEED },",
+              f"    config: {{ games: GAMES, shard: SHARD, shards: SHARDS, stockfishElo: STOCKFISH_ELO, moveTimeMs: MOVE_TIME_MS, vantaNodeLimit: {vanta_nodes}, stockfishNodeLimit: {stockfish_nodes}, deterministicWorkGate: true, maxPlies: MAX_PLIES, seed: SEED }},",
           )
           p.write_text(s)
           PY
