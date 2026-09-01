@@ -6,6 +6,11 @@ const HOME = Object.freeze({
   w: { knights: [57, 62], bishops: [58, 61], queen: 59, king: 60, castles: [58, 62] },
   b: { knights: [1, 6], bishops: [2, 5], queen: 3, king: 4, castles: [2, 6] },
 });
+const KING_RAYS = Object.freeze([
+  [-1, -1, true], [-1, 0, false], [-1, 1, true],
+  [0, -1, false],                  [0, 1, false],
+  [1, -1, true],  [1, 0, false],   [1, 1, true],
+]);
 
 function sign(color) { return color === WHITE ? 1 : -1; }
 function advance(row, color) { return color === WHITE ? 6 - row : row - 1; }
@@ -87,6 +92,71 @@ function kingShield(board, kingSquare, color, phase) {
   }
   if (file === 6 || file === 2) shield += 15;
   return Math.round(shield * phase);
+}
+
+function kingPressure(board, kingSquare, color, phase, pawnsByColor, piecesByColor) {
+  if (kingSquare < 0 || phase < 0.22) return 0;
+  const enemy = color === 'w' ? 'b' : 'w';
+  const [kingRow, kingFile] = rowCol(kingSquare);
+  let danger = 0;
+
+  // Cheap latent slider pressure. A rook, bishop or queen aimed through one
+  // friendly blocker still matters because that blocker can be pinned,
+  // exchanged, or deflected just beyond the current search horizon.
+  for (const [dr, dc, diagonal] of KING_RAYS) {
+    let row = kingRow + dr;
+    let file = kingFile + dc;
+    let distance = 1;
+    let blocker = 0;
+    while (row >= 0 && row < 8 && file >= 0 && file < 8 && distance <= 6) {
+      const piece = board[row * 8 + file];
+      if (!piece) {
+        row += dr; file += dc; distance++;
+        continue;
+      }
+      const pieceColor = colorOf(piece);
+      const type = typeOf(piece);
+      if (pieceColor === color) {
+        if (blocker === 0) {
+          blocker = 1;
+          row += dr; file += dc; distance++;
+          continue;
+        }
+        break;
+      }
+      if (pieceColor === enemy) {
+        const slider = type === 'q' || (diagonal ? type === 'b' : type === 'r');
+        if (slider) {
+          let pressure = type === 'q' ? 22 : 15;
+          if (blocker) pressure = Math.round(pressure * 0.45);
+          pressure -= Math.max(0, distance - 2) * 2;
+          danger += Math.max(3, pressure);
+        }
+      }
+      break;
+    }
+  }
+
+  // Count enemy pawn attacks that land in the king's immediate ring.
+  const enemyPawnDir = enemy === 'w' ? -1 : 1;
+  for (const square of pawnsByColor[enemy]) {
+    const [row, file] = rowCol(square);
+    if (Math.abs(row - kingRow) > 3 || Math.abs(file - kingFile) > 2) continue;
+    const attackRow = row + enemyPawnDir;
+    if (Math.abs(attackRow - kingRow) <= 1 &&
+        (Math.abs(file - 1 - kingFile) <= 1 || Math.abs(file + 1 - kingFile) <= 1)) danger += 6;
+  }
+
+  // Knights near a king can create forks and quiet mating threats one ply
+  // beyond a capture-only horizon. Geometry is cheaper here than attack maps.
+  for (const square of piecesByColor[enemy].knights) {
+    const [row, file] = rowCol(square);
+    const dr = Math.abs(row - kingRow);
+    const df = Math.abs(file - kingFile);
+    if ((dr === 1 && df <= 3) || (dr === 2 && df <= 2) || (dr === 3 && df === 1)) danger += 5;
+  }
+
+  return Math.round(danger * phase);
 }
 
 function openingDiscipline(position, piecesByColor, kings, phase) {
@@ -182,6 +252,8 @@ export function fastEvaluate(position, perspective = position.turn) {
   whiteScore += pawnStructure(board, pawnsByColor);
   whiteScore += kingShield(board, kings.w, 'w', phase);
   whiteScore -= kingShield(board, kings.b, 'b', phase);
+  whiteScore += kingPressure(board, kings.b, 'b', phase, pawnsByColor, piecesByColor);
+  whiteScore -= kingPressure(board, kings.w, 'w', phase, pawnsByColor, piecesByColor);
   whiteScore += openingDiscipline(position, piecesByColor, kings, phase);
   whiteScore += rookFileActivity(pawnsByColor, rooksByColor);
 
