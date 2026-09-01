@@ -39,7 +39,7 @@ jobs:
           s=p.read_text()
           s=s.replace(
               "import { SearchEngine } from './search.js';",
-              "import { StableGateSearchEngine as SearchEngine } from './stable-gate-search.js';",
+              "import { GateSearchEngine as SearchEngine } from './gate-search.js';",
           )
           s=s.replace(
               "function productionVantaMove(game) {",
