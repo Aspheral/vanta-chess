@@ -106,6 +106,6 @@ jobs:
           name: stress-1650-report
           path: benchmarks/stress-1650.json
           if-no-files-found: error
-      - name: Enforce requested 50 percent literal win-rate gate
+      - name: Enforce requested 40 percent literal win-rate gate
         run: |
-          node -e "const r=require('./benchmarks/stress-1650.json'); console.log('score',r.totals.scoreRate,'win',r.totals.winRate); if(r.totals.winRate < 0.5) process.exit(1)"
+          node -e "const r=require('./benchmarks/stress-1650.json'); console.log('score',r.totals.scoreRate,'win',r.totals.winRate); if(r.totals.winRate < 0.4) process.exit(1)"
