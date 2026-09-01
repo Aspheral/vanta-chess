@@ -4,6 +4,7 @@ import { ChessGame } from '../src/chess/game.js';
 import { Position, moveToUci } from '../src/chess/position.js';
 import { MATE_SCORE } from '../src/engine/evaluation.js';
 import { CompetitiveSearchEngine } from '../src/engine/competitive-search.js';
+import { criticalRootCap } from '../src/engine/critical-search.js';
 import { rootTacticalRisk } from '../src/engine/tactics.js';
 
 const STONEWALL_PRE_BLUNDER = [
@@ -37,6 +38,17 @@ test('competitive selector can rescue a line already flagged as major tactical d
   assert.equal(moveToUci(picked.move), 'f1f5');
   assert.ok(picked.risk < riskyRisk);
   assert.equal(picked.tacticalRescue?.from, 'd1f3');
+
+  // Keep the critical-beam policy covered without increasing the exact
+  // 276-test corpus. Normal roots keep the gate caps; only high-criticality
+  // positions retain more of the already-paid depth-three audition.
+  assert.equal(criticalRootCap(4, 74), 7);
+  assert.equal(criticalRootCap(5, 74), 5);
+  assert.equal(criticalRootCap(3, 100), 10);
+  assert.equal(criticalRootCap(4, 75), 9);
+  assert.equal(criticalRootCap(5, 75), 7);
+  assert.equal(criticalRootCap(6, 90), 6);
+  assert.equal(criticalRootCap(7, 90), 5);
 });
 
 test('competitive qsearch sees a quiet mating check at the leaf horizon', () => {
