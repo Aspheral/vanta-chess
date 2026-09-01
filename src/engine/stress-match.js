@@ -14,6 +14,8 @@ const SHARD = Number(process.env.STRESS_SHARD || 0);
 const SHARDS = Number(process.env.STRESS_SHARDS || 1);
 const STOCKFISH_ELO = Number(process.env.STRESS_ELO || 1650);
 const MOVE_TIME_MS = Number(process.env.STRESS_MOVE_MS || 650);
+const VANTA_NODE_LIMIT = Number(process.env.STRESS_VANTA_NODES || 30000);
+const STOCKFISH_NODE_LIMIT = Number(process.env.STRESS_STOCKFISH_NODES || 800000);
 const MAX_PLIES = Number(process.env.STRESS_MAX_PLIES || 120);
 const SEED = Number(process.env.STRESS_SEED || 20260829) >>> 0;
 const REPORT_PATH = process.env.STRESS_REPORT || `benchmarks/stress-1650-shard-${SHARD}.json`;
@@ -109,8 +111,10 @@ class UciEngine {
   }
   async bestMove(history) {
     this.send(history.length ? `position startpos moves ${history.join(' ')}` : 'position startpos');
-    this.send(`go movetime ${MOVE_TIME_MS}`);
-    const line = await this.waitFor(text => text.startsWith('bestmove '), MOVE_TIME_MS + 8000);
+    if (STOCKFISH_NODE_LIMIT > 0) this.send(`go nodes ${STOCKFISH_NODE_LIMIT}`);
+    else this.send(`go movetime ${MOVE_TIME_MS}`);
+    const timeout = STOCKFISH_NODE_LIMIT > 0 ? 30000 : MOVE_TIME_MS + 8000;
+    const line = await this.waitFor(text => text.startsWith('bestmove '), timeout);
     const move = line.split(/\s+/)[1];
     return move && move !== '(none)' ? move : null;
   }
@@ -169,18 +173,20 @@ function gamePoint(result, color) {
 function productionVantaMove(game) {
   const position = game.position;
   const profile = adaptiveStrengthProfile(position, { moveTimeMs: MOVE_TIME_MS });
+  const nodeLimit = VANTA_NODE_LIMIT > 0 ? VANTA_NODE_LIMIT : profile.nodeLimit;
   const config = {
     targetElo: profile.targetElo,
     maxDepth: profile.maxDepth,
-    nodeLimit: profile.nodeLimit,
+    nodeLimit,
     selectionWindow: profile.selectionWindow,
     evalNoise: profile.evalNoise,
   };
+  const fixedWork = VANTA_NODE_LIMIT > 0;
   const options = {
     maxDepth: profile.maxDepth,
-    moveTimeMs: MOVE_TIME_MS,
-    softTimeMs: Math.min(MOVE_TIME_MS, profile.softTimeMs),
-    hardTimeMs: MOVE_TIME_MS,
+    moveTimeMs: fixedWork ? 60000 : MOVE_TIME_MS,
+    softTimeMs: fixedWork ? 60000 : Math.min(MOVE_TIME_MS, profile.softTimeMs),
+    hardTimeMs: fixedWork ? 60000 : MOVE_TIME_MS,
   };
   const run = excludeMoves => searchWithPracticalSafety(
     new SearchEngine(config),
@@ -264,7 +270,11 @@ async function main() {
   try {
     const id = await stockfish.init();
     console.log(`Stockfish: ${id}, UCI_Elo ${STOCKFISH_ELO}`);
-    console.log(`Shard ${SHARD + 1}/${SHARDS}: ${mine.length} of ${GAMES} games, ${MOVE_TIME_MS} ms/move`);
+    if (VANTA_NODE_LIMIT > 0 || STOCKFISH_NODE_LIMIT > 0) {
+      console.log(`Shard ${SHARD + 1}/${SHARDS}: ${mine.length} of ${GAMES} games, node gate Vanta ${VANTA_NODE_LIMIT} / Stockfish ${STOCKFISH_NODE_LIMIT}`);
+    } else {
+      console.log(`Shard ${SHARD + 1}/${SHARDS}: ${mine.length} of ${GAMES} games, ${MOVE_TIME_MS} ms/move`);
+    }
     for (const assignment of mine) {
       console.log(`Game ${assignment.gameIndex + 1}/${GAMES}: ${assignment.opening.name}, Vanta ${assignment.vantaColor === WHITE ? 'White' : 'Black'}`);
       const game = await playGame(stockfish, assignment.opening, assignment.vantaColor, assignment.gameIndex);
@@ -277,7 +287,18 @@ async function main() {
 
   const report = {
     generatedAt: new Date().toISOString(),
-    config: { games: GAMES, shard: SHARD, shards: SHARDS, stockfishElo: STOCKFISH_ELO, moveTimeMs: MOVE_TIME_MS, maxPlies: MAX_PLIES, seed: SEED },
+    config: {
+      games: GAMES,
+      shard: SHARD,
+      shards: SHARDS,
+      stockfishElo: STOCKFISH_ELO,
+      moveTimeMs: MOVE_TIME_MS,
+      vantaNodeLimit: VANTA_NODE_LIMIT,
+      stockfishNodeLimit: STOCKFISH_NODE_LIMIT,
+      fixedWorkGate: VANTA_NODE_LIMIT > 0 || STOCKFISH_NODE_LIMIT > 0,
+      maxPlies: MAX_PLIES,
+      seed: SEED,
+    },
     openings,
     games,
   };
