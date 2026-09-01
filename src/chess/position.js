@@ -15,8 +15,11 @@ export const FLAGS = Object.freeze({
 });
 
 export class Position {
-  constructor({ board, turn = WHITE, castling = 'KQkq', epSquare = null, halfmove = 0, fullmove = 1, hash = null } = {}) {
-    this.board = board ? [...board] : Position.fromFEN(START_FEN).board;
+  constructor({ board, turn = WHITE, castling = 'KQkq', epSquare = null, halfmove = 0, fullmove = 1, hash = null, _takeBoard = false } = {}) {
+    // Public construction remains defensive: caller-owned arrays are copied.
+    // Internal callers may transfer a freshly-created board with _takeBoard to
+    // avoid cloning the same 64-square array twice on every search child.
+    this.board = board ? (_takeBoard ? board : [...board]) : Position.fromFEN(START_FEN).board;
     this.turn = turn;
     this.castling = castling === '-' ? '' : castling;
     this.epSquare = epSquare;
@@ -59,6 +62,7 @@ export class Position {
       epSquare,
       halfmove: Number(half),
       fullmove: Number(full),
+      _takeBoard: true,
     });
   }
 
@@ -265,6 +269,7 @@ export class Position {
       halfmove: pawnMove || capture ? 0 : this.halfmove + 1,
       fullmove: this.fullmove + (us === BLACK ? 1 : 0),
       hash,
+      _takeBoard: true,
     });
   }
 
