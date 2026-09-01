@@ -152,6 +152,8 @@ function shouldProbeForMate(move, result) {
   return Boolean(
     (move.flags & FLAGS.CAPTURE)
     || move.promotion
+    || typeOf(move.piece) === 'k'
+    || result?.unstable
     || Math.abs(Number(result?.selectedRisk) || 0) >= MATE_PROBE_RISK_FLOOR
   );
 }
@@ -167,9 +169,9 @@ function mateProbe(position, move, result) {
  * implementation, which pre-excluded every heuristic hazard before alpha-beta.
  *
  * Material hazards may only be replaced by an already-nearby objective line.
- * A proven checking mate is different: once the selected move is demonstrated
- * to lose by force, the best exact candidate that does not share that forced
- * mate is preferable regardless of a shallow centipawn disagreement.
+ * A proven mate is different: once the selected move is demonstrated to lose
+ * by force, the best exact candidate that does not share that forced mate is
+ * preferable regardless of a shallow centipawn disagreement.
  */
 export function searchWithPracticalSafety(engine, position, options = {}) {
   const automatic = practicalSafetyExclusions(position, options);
@@ -232,7 +234,7 @@ export function searchWithPracticalSafety(engine, position, options = {}) {
         triggered: true,
         rescued: false,
         selectedHazard: selectedHazard || (selectedMate.forced
-          ? { uci: selectedUci, loss: 99000, reason: 'forced-checking-mate' }
+          ? { uci: selectedUci, loss: 99000, reason: 'forced-mate' }
           : null),
         exclusions: automatic,
         mateProbe: { forced: selectedMate.forced, nodes: mateProbeNodes },
@@ -251,7 +253,7 @@ export function searchWithPracticalSafety(engine, position, options = {}) {
       triggered: true,
       rescued: true,
       selectedHazard: selectedHazard || (selectedMate.forced
-        ? { uci: selectedUci, loss: 99000, reason: 'forced-checking-mate' }
+        ? { uci: selectedUci, loss: 99000, reason: 'forced-mate' }
         : null),
       rescue: { uci: rescue.uci, score: rescue.score },
       exclusions: automatic,
