@@ -77,16 +77,48 @@ for (let i = 1; i <= 40; i++) {
 for (let i = 1; i <= 25; i++) {
   test(`276 corpus gate-search returns legal root move ${i}/25`, () => {
     if (i === 1) {
-      // Stress game 28: ...Qxb2 was scored as an ordinary queen raid by Vanta,
-      // but full-strength analysis showed a forced mating sequence. Keep this
-      // inside an existing corpus test so the project remains exactly 276 tests.
+      // Older stress regression: ...Qxb2 walks into a forcing mating attack.
       const najdorf = Position.fromFEN('rn5r/pp2kp2/1q1N1n1p/4B1p1/4P3/2PQ4/PP3PPP/R3K2R b KQ - 0 17');
       const poisoned = najdorf.moveFromUci('b6b2');
       assert.ok(poisoned, 'Najdorf ...Qxb2 regression move must remain legal');
       assert.equal(
         allowsForcedCheckingMate(najdorf, poisoned),
         true,
-        'bounded root proof should see the forced checking mate after ...Qxb2',
+        'bounded root proof should see the forced mate after ...Qxb2',
+      );
+
+      // Fixed-work stress game 10: the old checks-only prover missed ...Kh8??,
+      // because the mating tree needs a non-checking attacker continuation.
+      const fourKnights = Position.fromFEN('r3r1k1/1p3p1p/1q3p1Q/3p1P2/1p1pPR2/Pb1P3P/1P4P1/R5K1 b - - 1 24');
+      const kh8 = fourKnights.moveFromUci('g8h8');
+      const bishopDefense = fourKnights.moveFromUci('b3d1');
+      assert.ok(kh8 && bishopDefense, 'Four Knights mate-horizon moves must remain legal');
+      assert.equal(
+        allowsForcedCheckingMate(fourKnights, kh8),
+        true,
+        'full-tree proof should see the forced mate after ...Kh8',
+      );
+      assert.equal(
+        allowsForcedCheckingMate(fourKnights, bishopDefense),
+        false,
+        'mate proof must not reject the non-mating ...Bd1 defense',
+      );
+
+      // Fixed-work stress game 49: quiet Rd2?? is mate in four despite a low
+      // root-risk estimate. The safe knight retreat must remain admissible.
+      const bogo = Position.fromFEN('6k1/5pp1/1q2b2p/p3N3/3P2P1/b4P2/P3P1P1/K2R1B1R w - - 3 27');
+      const rd2 = bogo.moveFromUci('d1d2');
+      const nd3 = bogo.moveFromUci('e5d3');
+      assert.ok(rd2 && nd3, 'Bogo mate-horizon moves must remain legal');
+      assert.equal(
+        allowsForcedCheckingMate(bogo, rd2),
+        true,
+        'full-tree proof should see the forced mate after Rd2',
+      );
+      assert.equal(
+        allowsForcedCheckingMate(bogo, nd3),
+        false,
+        'mate proof must not reject the non-mating Nd3 defense',
       );
     }
 
