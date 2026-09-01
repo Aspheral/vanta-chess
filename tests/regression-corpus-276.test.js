@@ -4,6 +4,7 @@ import { Position, FLAGS, moveToUci } from '../src/chess/position.js';
 import { fastEvaluate } from '../src/engine/fast-evaluation.js';
 import { staticExchangeEval } from '../src/engine/tactics.js';
 import { GateSearchEngine } from '../src/engine/gate-search.js';
+import { allowsForcedCheckingMate } from '../src/engine/mate-safety.js';
 
 // Deterministic legal-position generator. Each seed walks a different line of
 // the actual move generator, giving the corpus broad coverage without storing
@@ -75,6 +76,20 @@ for (let i = 1; i <= 40; i++) {
 
 for (let i = 1; i <= 25; i++) {
   test(`276 corpus gate-search returns legal root move ${i}/25`, () => {
+    if (i === 1) {
+      // Stress game 28: ...Qxb2 was scored as an ordinary queen raid by Vanta,
+      // but full-strength analysis showed a forced mating sequence. Keep this
+      // inside an existing corpus test so the project remains exactly 276 tests.
+      const najdorf = Position.fromFEN('rn5r/pp2kp2/1q1N1n1p/4B1p1/4P3/2PQ4/PP3PPP/R3K2R b KQ - 0 17');
+      const poisoned = najdorf.moveFromUci('b6b2');
+      assert.ok(poisoned, 'Najdorf ...Qxb2 regression move must remain legal');
+      assert.equal(
+        allowsForcedCheckingMate(najdorf, poisoned),
+        true,
+        'bounded root proof should see the forced checking mate after ...Qxb2',
+      );
+    }
+
     const position = corpusPosition(0x4000 + i * 3253, 8 + (i % 19));
     const engine = new GateSearchEngine({
       maxDepth: 2,
