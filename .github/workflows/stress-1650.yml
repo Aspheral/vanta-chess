@@ -1,6 +1,8 @@
 name: Vanta 1650 Stress Test
 
 on:
+  push:
+    branches: [stress-1650-audit]
   pull_request:
   workflow_dispatch:
 
@@ -12,8 +14,26 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enforce exactly 276 passing tests
+        run: |
+          set -o pipefail
+          npm test | tee /tmp/vanta-tests.tap
+          grep -Eq '^# tests 276$' /tmp/vanta-tests.tap
+          grep -Eq '^# pass 276$' /tmp/vanta-tests.tap
+          grep -Eq '^# fail 0$' /tmp/vanta-tests.tap
+
   play:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
+    needs: preflight
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -79,7 +99,7 @@ jobs:
           if-no-files-found: error
 
   analyze:
-    if: always() && (github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650'))
+    if: always() && needs.play.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650'))
     needs: play
     runs-on: ubuntu-latest
     timeout-minutes: 30
