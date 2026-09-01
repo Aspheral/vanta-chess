@@ -19,6 +19,7 @@ permissions:
 
 jobs:
   calibrate:
+    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'stress-1650')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:

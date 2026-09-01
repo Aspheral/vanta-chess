@@ -1,16 +1,13 @@
 import { FLAGS, moveToUci } from '../chess/position.js';
 import { colorOf, typeOf, opposite } from '../chess/constants.js';
 import { staticExchangeEval } from './tactics.js';
+import { forcedCheckingMateProbe } from './mate-safety.js';
 
 const PROTECTED_TYPES = new Set(['n', 'b', 'r', 'q']);
-// A moved major-piece loss needs a much tighter floor than a full-piece hang.
-// In the Tjkhan77 loss, 16...Qd6 allowed 17.Rxd6 Rxd6. Legal SEE values that
-// as roughly a 400 cp net loss (queen for rook), which slipped below the old
-// 650 cp queen threshold even though it is an elementary practical blunder.
-// Keep enough room for search-led exchange sacrifices, but never permit a clean
-// queen-for-rook concession simply because the queen can be recaptured later.
 const MOVED_LOSS_FLOOR = Object.freeze({ n: 260, b: 260, r: 360, q: 300 });
 export const AVOIDABLE_LOSS_FLOOR = 110;
+const SAFETY_RESCUE_WINDOW = 140;
+const MATE_PROBE_RISK_FLOOR = 240;
 
 function hasImmediateMate(position) {
   for (const move of position.legalMoves()) {
@@ -67,19 +64,12 @@ export function ignoredAttackedPieceLoss(position, move, seeMemo = new Map()) {
 
 /**
  * Catch a different family of blunder: moving a valuable piece onto a square
- * where the opponent can simply take it. The first August seatbelt only
- * watched pieces that were attacked before our move, so a checking queen move
- * such as ...Qxb2+ could be considered forcing even when Kxb2 was legal.
- *
- * Checks are NOT exempt here. If the opponent can answer the check by taking
- * the moved piece, that reply is exactly what must be seen. We only waive the
- * loss when accepting the sacrifice gives Vanta an immediate forced mate.
+ * where the opponent can simply take it.
  */
 export function movedPieceCaptureLoss(position, move, seeMemo = new Map()) {
   if (!move || !PROTECTED_TYPES.has(typeOf(move.piece))) return 0;
   const after = position.makeMove(move);
 
-  // Never suppress a move that is already checkmate.
   if (after.isInCheck() && after.legalMoves().length === 0) return 0;
 
   let rootGain = 0;
@@ -93,9 +83,7 @@ export function movedPieceCaptureLoss(position, move, seeMemo = new Map()) {
     if (reply.to !== move.to || !(reply.flags & FLAGS.CAPTURE)) continue;
     const afterReply = after.makeMove(reply);
 
-    // Preserve simple, sound mating sacrifices. Longer combinations remain
-    // search-led, but a naked queen/rook donation no longer gets a free pass
-    // merely because the move gave check.
+    // Preserve simple, sound mating sacrifices.
     if (hasImmediateMate(afterReply)) continue;
 
     const opponentGain = staticExchangeEval(after, reply, seeMemo);
@@ -106,9 +94,12 @@ export function movedPieceCaptureLoss(position, move, seeMemo = new Map()) {
 }
 
 /**
- * Exclude clearly avoidable root blunders before iterative deepening. If every
- * move is unsafe, exclusions are disabled so forced-loss positions remain
- * search-authoritative.
+ * Classify root moves that deserve practical verification.
+ *
+ * IMPORTANT: these are candidates for a post-search seatbelt, not moves that
+ * are automatically forbidden. The 1650 stress audit found that hard root
+ * exclusions could remove the objectively best tactical defense and literally
+ * force Vanta into a mating line. Search must remain authoritative.
  */
 export function practicalSafetyExclusions(position, options = {}) {
   if (position.isInCheck()) return [];
@@ -144,29 +135,129 @@ export function practicalSafetyExclusions(position, options = {}) {
   return unsafe;
 }
 
-/** Search with the practical root seatbelt applied. */
+function rebuildPv(position, pvUci = []) {
+  const pv = [];
+  let current = position;
+  for (const uci of pvUci) {
+    const move = current.moveFromUci(uci);
+    if (!move) break;
+    pv.push(move);
+    current = current.makeMove(move);
+  }
+  return pv;
+}
+
+function shouldProbeForMate(move, result) {
+  if (!move) return false;
+  return Boolean(
+    (move.flags & FLAGS.CAPTURE)
+    || move.promotion
+    || typeOf(move.piece) === 'k'
+    || result?.unstable
+    || Math.abs(Number(result?.selectedRisk) || 0) >= MATE_PROBE_RISK_FLOOR
+  );
+}
+
+function mateProbe(position, move, result) {
+  if (!shouldProbeForMate(move, result)) return { forced: false, nodes: 0 };
+  return forcedCheckingMateProbe(position, move);
+}
+
+/**
+ * Search every legal root move first, then use the practical detector only as
+ * a bounded post-search rescue. This is intentionally different from the old
+ * implementation, which pre-excluded every heuristic hazard before alpha-beta.
+ *
+ * Material hazards may only be replaced by an already-nearby objective line.
+ * A proven mate is different: once the selected move is demonstrated to lose
+ * by force, the best exact candidate that does not share that forced mate is
+ * preferable regardless of a shallow centipawn disagreement.
+ */
 export function searchWithPracticalSafety(engine, position, options = {}) {
   const automatic = practicalSafetyExclusions(position, options);
-  if (!automatic.length) {
-    const result = engine.search(position, options);
+  const result = engine.search(position, options);
+
+  if (!result.move) {
     return {
       ...result,
-      practicalSafety: { triggered: false, exclusions: [] },
+      practicalSafety: { triggered: false, rescued: false, exclusions: automatic },
     };
   }
 
-  const excludeMoves = [
-    ...new Set([
-      ...(options.excludeMoves || []),
-      ...automatic.map(item => item.uci),
-    ]),
-  ];
-  const result = engine.search(position, { ...options, excludeMoves });
+  const hazards = new Map(automatic.map(item => [item.uci, item]));
+  const selectedUci = moveToUci(result.move);
+  const selectedHazard = hazards.get(selectedUci) || null;
+  const selectedMate = mateProbe(position, result.move, result);
+
+  if (!selectedHazard && !selectedMate.forced) {
+    return {
+      ...result,
+      practicalSafety: {
+        triggered: false,
+        rescued: false,
+        exclusions: automatic,
+        mateProbe: selectedMate,
+      },
+    };
+  }
+
+  const objective = result.objectiveScore ?? result.score ?? 0;
+  let mateProbeNodes = selectedMate.nodes;
+  const candidates = (result.candidates || [])
+    .filter(candidate => candidate.uci !== selectedUci)
+    .filter(candidate => candidate.exact !== false)
+    .filter(candidate => !selectedHazard || !hazards.has(candidate.uci))
+    .filter(candidate => selectedMate.forced || candidate.score >= objective - SAFETY_RESCUE_WINDOW)
+    .sort((a, b) => b.score - a.score);
+
+  let rescue = null;
+  let rescueMove = null;
+  for (const candidate of candidates) {
+    const move = position.moveFromUci(candidate.uci);
+    if (!move) continue;
+
+    if (selectedMate.forced) {
+      const probe = forcedCheckingMateProbe(position, move);
+      mateProbeNodes += probe.nodes;
+      if (probe.forced) continue;
+    }
+
+    rescue = candidate;
+    rescueMove = move;
+    break;
+  }
+
+  if (!rescue || !rescueMove) {
+    return {
+      ...result,
+      practicalSafety: {
+        triggered: true,
+        rescued: false,
+        selectedHazard: selectedHazard || (selectedMate.forced
+          ? { uci: selectedUci, loss: 99000, reason: 'forced-mate' }
+          : null),
+        exclusions: automatic,
+        mateProbe: { forced: selectedMate.forced, nodes: mateProbeNodes },
+      },
+    };
+  }
+
+  const pv = rebuildPv(position, rescue.pv || [rescue.uci]);
   return {
     ...result,
+    move: rescueMove,
+    score: rescue.score + (rescue.personality || 0),
+    objectiveScore: rescue.score,
+    pv: pv.length ? pv : [rescueMove],
     practicalSafety: {
       triggered: true,
+      rescued: true,
+      selectedHazard: selectedHazard || (selectedMate.forced
+        ? { uci: selectedUci, loss: 99000, reason: 'forced-mate' }
+        : null),
+      rescue: { uci: rescue.uci, score: rescue.score },
       exclusions: automatic,
+      mateProbe: { forced: selectedMate.forced, nodes: mateProbeNodes },
     },
   };
 }

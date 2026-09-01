@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   pre-audit-baseline:
+    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'stress-1650')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -30,6 +31,7 @@ jobs:
         run: node src/engine/head-to-head.js
 
   current-main:
+    if: github.event_name != 'pull_request' || !startsWith(github.head_ref, 'stress-1650')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

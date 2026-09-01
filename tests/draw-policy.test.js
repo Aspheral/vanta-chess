@@ -2,7 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChessGame } from '../src/chess/game.js';
 import { Position, moveToUci } from '../src/chess/position.js';
-import { repetitionExclusions, shouldRejectRepetitionMove } from '../src/engine/draw-policy.js';
+import {
+  repetitionExclusions,
+  shouldRejectRepetitionMove,
+  wouldAllowOpponentThreefold,
+} from '../src/engine/draw-policy.js';
 import { SearchEngine } from '../src/engine/search.js';
 
 test('materially ahead side excludes an avoidable move that would create threefold repetition', () => {
@@ -27,6 +31,21 @@ test('equal-material but winning side excludes a threefold move from objective e
   assert.deepEqual(repetitionExclusions(game, 0), []);
   assert.ok(repetitionExclusions(game, 150).includes('f6g8'));
   assert.equal(shouldRejectRepetitionMove(game, repeat, 150), true);
+});
+
+test('winning Vanta rejects a move that lets the opponent complete threefold next ply', () => {
+  const game = new ChessGame();
+  for (const uci of ['g1f3','g8f6','f3g1','f6g8','g1f3','g8f6']) game.playUci(uci);
+
+  assert.equal(game.position.turn, 'w');
+  const concession = game.position.moveFromUci('f3g1');
+  assert.ok(concession);
+  // This move is only occurrence #2 of its resulting position.
+  assert.equal(game.wouldCauseThreefold(concession), false);
+  // But ...Nf6-g8 would immediately restore the initial position for #3.
+  assert.equal(wouldAllowOpponentThreefold(game, concession), true);
+  assert.ok(repetitionExclusions(game, 150).includes('f3g1'));
+  assert.equal(shouldRejectRepetitionMove(game, concession, 150), true);
 });
 
 test('root exclusions are honored by the search engine', () => {

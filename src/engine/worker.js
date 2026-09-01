@@ -1,10 +1,10 @@
 import { Position, moveToUci } from '../chess/position.js';
-import { SearchEngine } from './search.js';
+import { CompetitiveSearchEngine } from './competitive-search.js';
 import { adaptiveStrengthProfile } from './adaptive-strength.js';
 import { searchWithPracticalSafety } from './practical-safety.js';
 
 let activeSearchId=0;
-let engine=new SearchEngine();
+let engine=new CompetitiveSearchEngine();
 
 function adaptiveRequest(position, config = {}, options = {}) {
   if (config.adaptiveStrength === false || options.adaptiveStrength === false) {
@@ -37,17 +37,23 @@ function adaptiveRequest(position, config = {}, options = {}) {
   return { config: effectiveConfig, options: effectiveOptions, profile };
 }
 
+function applyConfig(config={}) {
+  engine.config={...engine.config,...config};
+}
+
 self.onmessage = event => {
   const msg=event.data;
   if(msg.type==='cancel') { activeSearchId++; engine.stop(); return; }
-  if(msg.type==='configure') { engine=new SearchEngine(msg.config||{}); return; }
+  if(msg.type==='configure') { engine=new CompetitiveSearchEngine(msg.config||{}); return; }
   if(msg.type==='search') {
     const id=msg.searchId;
     activeSearchId=id;
     try {
       const position=Position.fromFEN(msg.fen);
       const request=adaptiveRequest(position,msg.config||{},msg.options||{});
-      engine=new SearchEngine(request.config);
+      // Keep TT/history across moves. Recreating the engine every turn threw
+      // away exactly the information iterative search had just learned.
+      applyConfig(request.config);
       const result=searchWithPracticalSafety(engine,position,request.options);
       if(activeSearchId!==id) return;
       self.postMessage({
@@ -69,11 +75,11 @@ self.onmessage = event => {
   if(msg.type==='ponder') {
     const id=msg.searchId;
     activeSearchId=id;
-    engine=new SearchEngine(msg.config||{});
     try {
       const position=Position.fromFEN(msg.fen);
-      // Pondering intentionally stays bounded. The real move search receives
-      // the full adaptive budget after the opponent actually commits a move.
+      applyConfig(msg.config||{});
+      // Pondering intentionally stays bounded. TT/history produced here are
+      // retained, so a real ponder hit can make the subsequent move deeper.
       const branches=engine.predictBranches(position,msg.count||4,msg.options||{});
       if(activeSearchId!==id) return;
       self.postMessage({type:'ponder-result',searchId:id,branches});
