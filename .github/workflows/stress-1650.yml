@@ -1,114 +1,139 @@
-name: Vanta 1650 Stress Test
+name: Vanta 256-Game SF18 Max Blunder Audit
 
 on:
   pull_request:
   workflow_dispatch:
 
 concurrency:
-  group: vanta-1650-stress-${{ github.ref }}
+  group: vanta-sf18-256-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  play:
+  prepare-stockfish:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download and verify official Stockfish 18 AVX2
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-ubuntu-x86-64-avx2.tar'
+          SHA256='536c0c2c0cf06450df0bfb5e876ef0d3119950703a8f143627f990c7b5417964'
+          curl -fL "$URL" -o /tmp/stockfish18.tar
+          echo "$SHA256  /tmp/stockfish18.tar" | sha256sum -c -
+          mkdir -p /tmp/stockfish18-extract stockfish-artifact
+          tar -xf /tmp/stockfish18.tar -C /tmp/stockfish18-extract
+          SF_BIN="$(find /tmp/stockfish18-extract -type f -name 'stockfish-ubuntu-x86-64-avx2' -print -quit)"
+          test -n "$SF_BIN"
+          cp "$SF_BIN" stockfish-artifact/stockfish18
+          chmod +x stockfish-artifact/stockfish18
+          UCI_OUTPUT="$(printf 'uci\nquit\n' | stockfish-artifact/stockfish18)"
+          echo "$UCI_OUTPUT" | grep '^id name Stockfish 18'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stockfish18-avx2
+          path: stockfish-artifact/stockfish18
+          if-no-files-found: error
+          retention-days: 1
+
+  audit-shard:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
+    needs: prepare-stockfish
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 20
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install Stockfish 16
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y stockfish
-          test -x /usr/games/stockfish
-      - name: Select persistent strongest available gate search path
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p=Path('src/engine/stress-match.js')
-          s=p.read_text()
-          if Path('src/engine/critical-search.js').exists():
-              search_import = "import { CriticalSearchEngine as SearchEngine } from './critical-search.js';"
-          else:
-              search_import = "import { GateSearchEngine as SearchEngine } from './gate-search.js';"
-          s=s.replace("import { SearchEngine } from './search.js';", search_import)
-          s=s.replace(
-              "function productionVantaMove(game) {",
-              "function productionVantaMove(game, engine) {",
-          )
-          s=s.replace(
-              "  const run = excludeMoves => searchWithPracticalSafety(\n    new SearchEngine(config),\n    position,",
-              "  engine.config = { ...engine.config, ...config };\n  const run = excludeMoves => searchWithPracticalSafety(\n    engine,\n    position,",
-          )
-          s=s.replace(
-              "  const game = setupGame(opening);\n  await stockfish.newGame();",
-              "  const game = setupGame(opening);\n  const engine = new SearchEngine();\n  await stockfish.newGame();",
-          )
-          s=s.replace(
-              "      const result = productionVantaMove(game);",
-              "      const result = productionVantaMove(game, engine);",
-          )
-          p.write_text(s)
-          PY
-      - name: Play paired randomized opening shard
-        env:
-          STRESS_GAMES: '50'
-          STRESS_SHARD: ${{ matrix.shard }}
-          STRESS_SHARDS: '25'
-          STRESS_ELO: '1650'
-          STRESS_MOVE_MS: '650'
-          STRESS_VANTA_NODES: '420000'
-          STRESS_STOCKFISH_NODES: '800000'
-          STRESS_MAX_PLIES: '120'
-          STRESS_SEED: '20260829'
-          STRESS_REPORT: benchmarks/stress-1650-shard-${{ matrix.shard }}.json
-        run: node src/engine/stress-match.js
-      - uses: actions/upload-artifact@v4
-        with:
-          name: stress-1650-shard-${{ matrix.shard }}
-          path: benchmarks/stress-1650-shard-${{ matrix.shard }}.json
-          if-no-files-found: error
-
-  analyze:
-    if: always() && (github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650'))
-    needs: play
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install Stockfish 16
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y stockfish
       - uses: actions/download-artifact@v4
         with:
-          pattern: stress-1650-shard-*
-          merge-multiple: true
-          path: benchmarks/stress-shards
-      - name: Diagnose every Vanta move at full Stockfish strength
+          name: stockfish18-avx2
+          path: .sf18
+      - name: Activate Stockfish 18
+        shell: bash
+        run: |
+          chmod +x .sf18/stockfish18
+          echo "STOCKFISH_BIN=$GITHUB_WORKSPACE/.sf18/stockfish18" >> "$GITHUB_ENV"
+          UCI_OUTPUT="$(printf 'uci\nquit\n' | .sf18/stockfish18)"
+          echo "$UCI_OUTPUT" | grep '^id name Stockfish 18'
+
+      - name: Play 256-game production Vanta shard
         env:
-          STRESS_ANALYSIS_DEPTH: '9'
-          STRESS_MISTAKE_CP: '90'
-          STRESS_BLUNDER_CP: '180'
-        run: node src/engine/stress-analyze.js benchmarks/stress-shards benchmarks/stress-1650.json
+          STRESS_GAMES: '256'
+          STRESS_SHARD: ${{ matrix.shard }}
+          STRESS_SHARDS: '32'
+          STRESS_ELO: '1650'
+          STRESS_MOVE_MS: '650'
+          STRESS_STOCKFISH_NODES: '350000'
+          STRESS_MAX_PLIES: '100'
+          STRESS_SEED: '20260901'
+          STRESS_REPORT: benchmarks/stress-256-shard-${{ matrix.shard }}.json
+        run: node src/engine/stress-match.js
+
+      - name: Audit every Vanta move with Stockfish 18 Max
+        env:
+          SF18_THREADS: '2'
+          SF18_HASH_MB: '512'
+          SF18_SCREEN_NODES: '200000'
+          SF18_VERIFY_NODES: '1000000'
+          SF18_CONFIRM_NODES: '4000000'
+          SF18_CANDIDATE_CP: '35'
+          SF18_MISTAKE_CP: '50'
+          SF18_BLUNDER_CP: '100'
+        run: node src/engine/sf18-blunder-audit.js benchmarks/stress-256-shard-${{ matrix.shard }}.json benchmarks/sf18-audit-shard-${{ matrix.shard }}.json
+
       - uses: actions/upload-artifact@v4
         with:
-          name: stress-1650-report
-          path: benchmarks/stress-1650.json
+          name: sf18-256-audit-shard-${{ matrix.shard }}
+          path: |
+            benchmarks/stress-256-shard-${{ matrix.shard }}.json
+            benchmarks/sf18-audit-shard-${{ matrix.shard }}.json
           if-no-files-found: error
-      - name: Enforce requested 40 percent literal win-rate gate
+          retention-days: 14
+
+  aggregate:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
+    needs: audit-shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sf18-256-audit-shard-*
+          merge-multiple: true
+          path: benchmarks/sf18-shards
+
+      - name: Merge all 256 games and SF18 verdicts
+        run: node src/engine/sf18-blunder-merge.js benchmarks/sf18-shards benchmarks/sf18-256.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sf18-256-final-report
+          path: benchmarks/sf18-256.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce zero Stockfish-18-confirmed blunders
         run: |
-          node -e "const r=require('./benchmarks/stress-1650.json'); console.log('score',r.totals.scoreRate,'win',r.totals.winRate); if(r.totals.winRate < 0.4) process.exit(1)"
+          node - <<'NODE'
+          const report = require('./benchmarks/sf18-256.json');
+          const d = report.diagnostics;
+          console.log(`games=${report.totals.games} analyzedMoves=${d.analyzedVantaMoves} mistakes=${d.mistakes} blunders=${d.blunders}`);
+          if (report.totals.games !== 256) throw new Error(`Expected 256 games, got ${report.totals.games}`);
+          if (d.blunders !== 0) throw new Error(`Zero-blunder gate failed: ${d.blunders} Stockfish 18 Max confirmed blunder(s).`);
+          console.log('ZERO-BLUNDER GATE PASSED');
+          NODE
