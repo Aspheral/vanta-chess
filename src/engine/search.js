@@ -6,6 +6,10 @@ import {
   staticExchangeEval, rootTacticalRisk, cheapVolatility, positionCriticality,
   hasNearPromotion, allocateRapidTime,
 } from './tactics.js';
+import {
+  endgameStrategicScore, openingMoveDiscipline, isEndgameCriticalMove,
+  isEndgamePassedPawnPush, rootImmediateMaterialLoss, quietTacticalThreatScore,
+} from './strategic-discipline.js';
 
 const INF = 1_000_000;
 const MATE_TT_BOUND = MATE_SCORE - 1000;
@@ -45,10 +49,10 @@ export class SearchEngine {
   }
 
   staticEval(position, perspective = position.turn) {
-    const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 15)}`;
+    const key = `${position.hash.toString()}:${perspective}:${Math.min(position.fullmove, 16)}`;
     const cached = this.evalCache.get(key);
     if (cached !== undefined) return cached;
-    const score = evaluate(position, perspective);
+    const score = evaluate(position, perspective) + endgameStrategicScore(position, perspective);
     this.evalCache.set(key, score);
     if (this.evalCache.size > 40000) {
       let removed = 0;
@@ -225,7 +229,7 @@ export class SearchEngine {
         move,
         score,
         pv: [move, ...pv],
-        personality: personalityMoveBonus(position, move),
+        personality: personalityMoveBonus(position, move) + openingMoveDiscipline(position, move),
         exact,
       };
       lines.push(line);
@@ -263,13 +267,14 @@ export class SearchEngine {
 
     let priorOccurrences = 0;
     for (const hash of pathHashes) if (hash === position.hash) priorOccurrences++;
+    const inCheck = position.isInCheck();
     if (priorOccurrences >= 2) return this.repetitionUtility(position);
+    if (priorOccurrences >= 1 && depth <= 0 && !inCheck) return this.cycleUtility(position);
     if (position.halfmove >= 100) return 0;
 
-    const inCheck = position.isInCheck();
     if (inCheck && depth < 8) depth++;
 
-    const key = `${position.hash.toString()}:${Math.min(position.halfmove, 100)}:${Math.min(position.fullmove, 15)}`;
+    const key = `${position.hash.toString()}:${Math.min(position.halfmove, 100)}:${Math.min(position.fullmove, 16)}`;
     const tt = this.tt.get(key);
     if (tt && tt.depth >= depth) {
       this.ttHits++;
@@ -291,8 +296,6 @@ export class SearchEngine {
     let bestScore = -INF;
     let bestMove = null;
     let bestPv = [];
-    // Tactical classification is only needed at depths where LMR can occur.
-    // Avoid paying for full board scans at shallow nodes.
     const volatile = depth >= 3 && (cheapVolatility(position) >= 52 || hasNearPromotion(position));
 
     for (let i = 0; i < moves.length; i++) {
@@ -301,12 +304,15 @@ export class SearchEngine {
       const next = position.makeMove(move);
       const quiet = !(move.flags & FLAGS.CAPTURE) && !move.promotion;
       const givesCheck = depth >= 3 && next.isInCheck();
+      const endgameCritical = isEndgameCriticalMove(position, move);
+      const passerPush = isEndgamePassedPawnPush(position, move);
       let reduction = 0;
-      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !volatile) {
+      if (depth >= 3 && i >= 5 && !inCheck && quiet && !givesCheck && !volatile && !endgameCritical) {
         reduction = depth >= 5 && i >= 9 ? 2 : 1;
       }
 
-      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0));
+      const endgameExtension = passerPush && depth <= 5 ? 1 : 0;
+      const fullDepth = Math.max(0, depth - 1 + (move.promotion ? 1 : 0) + endgameExtension);
       const reducedDepth = Math.max(0, fullDepth - reduction);
       let childPv = [];
       let score;
@@ -392,16 +398,22 @@ export class SearchEngine {
 
     if (qply > 8 || ply > 18 || this.timeUp()) return inCheck ? alpha : Math.max(alpha, stand);
 
-    // Quiet checks are useful in volatile horizon nodes, but searching them at
-    // every q-node was a large speed regression. Captures and all promotions
-    // remain present unconditionally.
-    if (!inCheck && qply === 0 && cheapVolatility(position) >= 48) {
+    if (!inCheck && qply === 0) {
       const existing = new Set(moves.map(moveToUci));
+      const tacticalQuiets = [];
+      const volatility = cheapVolatility(position);
       for (const move of position.legalMoves()) {
         if (existing.has(moveToUci(move))) continue;
         if (move.flags & FLAGS.CAPTURE || move.promotion) continue;
-        if (position.makeMove(move).isInCheck()) moves.push(move);
+        const next = position.makeMove(move);
+        const checkPriority = volatility >= 48 && next.isInCheck() ? 520 : 0;
+        const threatPriority = quietTacticalThreatScore(position, move);
+        const endgamePriority = isEndgamePassedPawnPush(position, move) ? 330 : 0;
+        const priority = Math.max(checkPriority, threatPriority, endgamePriority);
+        if (priority >= 300) tacticalQuiets.push({ move, priority });
       }
+      tacticalQuiets.sort((a, b) => b.priority - a.priority);
+      for (const item of tacticalQuiets.slice(0, 4)) moves.push(item.move);
     }
 
     moves = this.orderMoves(position, moves, ply, null);
@@ -411,8 +423,6 @@ export class SearchEngine {
       const givesCheck = next.isInCheck();
       if (!inCheck && (move.flags & FLAGS.CAPTURE) && !move.promotion && !givesCheck) {
         const victim = PIECE_VALUES[typeOf(move.captured)] || 0;
-        // Full legal SEE is authoritative in qsearch, where pruning an exchange
-        // incorrectly is dangerous and the candidate set is already tactical.
         const see = staticExchangeEval(position, move, this.seeMemo);
         if (see < -120) continue;
         if (stand + Math.max(victim, see) + 95 < alpha) continue;
@@ -435,15 +445,17 @@ export class SearchEngine {
         const victim = PIECE_VALUES[typeOf(move.captured)] || 0;
         const attacker = PIECE_VALUES[typeOf(move.piece)] || 0;
         score += 80_000 + victim * 12 - attacker;
-        // Legal SEE is deliberately selective here. Root ordering benefits from
-        // exact exchange information; doing it at every interior node erased a
-        // full ply of practical depth.
         if (ply === 0) {
           const see = staticExchangeEval(position, move, this.seeMemo);
           score += Math.max(-12000, Math.min(30000, see * 30));
         }
       }
-      if (ply <= 1 && !(move.flags & FLAGS.CAPTURE) && !move.promotion && position.makeMove(move).isInCheck()) score += 62_000;
+      if (ply <= 1 && !(move.flags & FLAGS.CAPTURE) && !move.promotion) {
+        const next = position.makeMove(move);
+        if (next.isInCheck()) score += 62_000;
+        if (ply === 0) score += Math.min(52000, quietTacticalThreatScore(position, move) * 100);
+        if (isEndgameCriticalMove(position, move)) score += 28_000;
+      }
       if (killers[0] === u) score += 18_000;
       else if (killers[1] === u) score += 14_000;
       score += Math.min(30000, this.history.get(u) || 0);
@@ -476,15 +488,13 @@ export class SearchEngine {
     const window = this.config.selectionWindow ?? 32;
     const eligible = pool.filter(line => line.score >= bestScore - window);
     const danger = cheapVolatility(position);
-    const scored = eligible.map(line => {
+    const scoreLine = line => {
       const deterministicNoise = this.config.evalNoise
         ? pseudoNoise(position.hash, line.move, this.config.evalNoise)
         : 0;
       const personality = danger >= 62 ? 0 : (line.personality || 0);
       const risk = rootTacticalRisk(position, line.move, this.seeMemo);
-      // Root risk is a veto/verification signal, not a second evaluation
-      // function. Keep it strong for mate/rook/queen loss but modest for a
-      // potentially sound minor-piece sacrifice that normal search likes.
+      const materialLoss = rootImmediateMaterialLoss(position, line.move, this.seeMemo);
       const riskPenalty = risk >= MATE_RISK
         ? 1_000_000
         : risk >= 700
@@ -492,24 +502,61 @@ export class SearchEngine {
           : risk >= 300
             ? 35 + (risk - 300) * 0.08
             : 0;
-      const composite = line.score + personality + deterministicNoise - riskPenalty;
-      return { ...line, personality, risk, composite };
-    }).sort((a, b) => b.composite - a.composite);
+      const materialPenalty = materialLoss >= 500
+        ? 150 + (materialLoss - 500) * 0.22
+        : materialLoss >= 180
+          ? 50 + (materialLoss - 180) * 0.18
+          : 0;
+      const composite = line.score + personality + deterministicNoise - riskPenalty - materialPenalty;
+      return { ...line, personality, risk, materialLoss, composite };
+    };
 
+    const scored = eligible.map(scoreLine).sort((a, b) => b.composite - a.composite);
     let pick = scored[0] || pool[0];
 
-    // A short forced rook/queen loss can widen the normal personality window;
-    // smaller tactical concessions remain search-authoritative so sacrifices
-    // are not mechanically banned.
+    if (pick?.materialLoss >= 180) {
+      const pickedAfter = position.makeMove(pick.move);
+      const capturedValue = pick.move.captured ? (PIECE_VALUES[typeOf(pick.move.captured)] || 0) : 0;
+      const forcingCompensation = pickedAfter.isInCheck()
+        || Boolean(pick.move.promotion)
+        || capturedValue >= PIECE_VALUES.n
+        || quietTacticalThreatScore(position, pick.move) >= 400;
+
+      if (!forcingCompensation) {
+        const rescueWindow = Math.min(520, Math.max(260, pick.materialLoss + 220));
+        const rescueLines = pool
+          .filter(line => line.score >= bestScore - rescueWindow)
+          .map(scoreLine)
+          .filter(line => line.materialLoss < 120)
+          .sort((a, b) => b.composite - a.composite);
+        const safe = rescueLines[0];
+        if (safe && pick.score - safe.score <= pick.materialLoss + 160) pick = safe;
+      }
+    }
+
+    const rootMaterial = materialBalance(position, position.turn);
+    if (rootMaterial <= -150 && pick && (pick.risk >= 300 || pick.materialLoss >= 180)) {
+      const rescueWindow = Math.min(520, Math.max(220, pick.materialLoss + 180));
+      const safer = pool
+        .filter(line => line.score >= pick.score - rescueWindow)
+        .map(scoreLine)
+        .filter(line => line.risk + 120 < pick.risk || line.materialLoss + 120 < pick.materialLoss)
+        .sort((a, b) => b.composite - a.composite)[0];
+      if (safer && pick.score - safer.score <= Math.max(180, pick.materialLoss + 140)) pick = safer;
+    }
+
     if (pick?.risk >= 500) {
-      const rescuePool = pool.filter(line => line.score >= bestScore - 120).map(line => ({
-        ...line,
-        risk: rootTacticalRisk(position, line.move, this.seeMemo),
-      }));
+      // Moderate heuristic warnings can only choose among moves that search
+      // already considers competitive. Only catastrophic risk (700+) may widen
+      // the normal personality window to rescue a rook/queen-scale disaster.
+      const tacticalRescueWindow = pick.risk >= 700 ? 120 : window;
+      const rescuePool = pool
+        .filter(line => line.score >= bestScore - tacticalRescueWindow)
+        .map(scoreLine);
       const safer = rescuePool
-        .filter(line => line.risk + 220 < pick.risk)
-        .sort((a, b) => (b.score - b.risk * 0.18) - (a.score - a.risk * 0.18))[0];
-      if (safer) pick = { ...safer, composite: safer.score };
+        .filter(line => line.risk + 220 < pick.risk && line.materialLoss < 180)
+        .sort((a, b) => b.composite - a.composite)[0];
+      if (safer) pick = safer;
     }
 
     return {
@@ -519,6 +566,15 @@ export class SearchEngine {
       pv: pick.pv,
       risk: pick.risk || 0,
     };
+  }
+
+  cycleUtility(position) {
+    const staticScore = this.staticEval(position);
+    const material = materialBalance(position, position.turn);
+    const penalty = 42 + Math.round((VANTA_PERSONALITY.drawAversion / 100) * 100);
+    if (material > 0 || staticScore >= 70) return staticScore - penalty;
+    if (material < 0 || staticScore <= -70) return staticScore + Math.round(penalty * 0.45);
+    return staticScore - 12;
   }
 
   repetitionUtility(position) {
