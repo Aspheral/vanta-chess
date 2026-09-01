@@ -1,10 +1,10 @@
 import { Position, moveToUci } from '../chess/position.js';
-import { CompetitiveSearchEngine } from './competitive-search.js';
+import { CriticalSearchEngine } from './critical-search.js';
 import { adaptiveStrengthProfile } from './adaptive-strength.js';
 import { searchWithPracticalSafety } from './practical-safety.js';
 
 let activeSearchId=0;
-let engine=new CompetitiveSearchEngine();
+let engine=new CriticalSearchEngine();
 
 function adaptiveRequest(position, config = {}, options = {}) {
   if (config.adaptiveStrength === false || options.adaptiveStrength === false) {
@@ -44,7 +44,7 @@ function applyConfig(config={}) {
 self.onmessage = event => {
   const msg=event.data;
   if(msg.type==='cancel') { activeSearchId++; engine.stop(); return; }
-  if(msg.type==='configure') { engine=new CompetitiveSearchEngine(msg.config||{}); return; }
+  if(msg.type==='configure') { engine=new CriticalSearchEngine(msg.config||{}); return; }
   if(msg.type==='search') {
     const id=msg.searchId;
     activeSearchId=id;
