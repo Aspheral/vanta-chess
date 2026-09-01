@@ -1,11 +1,13 @@
 import { FLAGS, moveToUci } from '../chess/position.js';
 import { colorOf, typeOf, opposite } from '../chess/constants.js';
 import { staticExchangeEval } from './tactics.js';
+import { forcedCheckingMateProbe } from './mate-safety.js';
 
 const PROTECTED_TYPES = new Set(['n', 'b', 'r', 'q']);
 const MOVED_LOSS_FLOOR = Object.freeze({ n: 260, b: 260, r: 360, q: 300 });
 export const AVOIDABLE_LOSS_FLOOR = 110;
 const SAFETY_RESCUE_WINDOW = 140;
+const MATE_PROBE_RISK_FLOOR = 240;
 
 function hasImmediateMate(position) {
   for (const move of position.legalMoves()) {
@@ -145,21 +147,35 @@ function rebuildPv(position, pvUci = []) {
   return pv;
 }
 
+function shouldProbeForMate(move, result) {
+  if (!move) return false;
+  return Boolean(
+    (move.flags & FLAGS.CAPTURE)
+    || move.promotion
+    || Math.abs(Number(result?.selectedRisk) || 0) >= MATE_PROBE_RISK_FLOOR
+  );
+}
+
+function mateProbe(position, move, result) {
+  if (!shouldProbeForMate(move, result)) return { forced: false, nodes: 0 };
+  return forcedCheckingMateProbe(position, move);
+}
+
 /**
  * Search every legal root move first, then use the practical detector only as
  * a bounded post-search rescue. This is intentionally different from the old
  * implementation, which pre-excluded every heuristic hazard before alpha-beta.
  *
- * If the searched choice is flagged, a clearly safer candidate may replace it
- * only when that candidate is already within a small objective window. A
- * tactical sacrifice or defensive resource that search values substantially
- * higher therefore survives the seatbelt.
+ * Material hazards may only be replaced by an already-nearby objective line.
+ * A proven checking mate is different: once the selected move is demonstrated
+ * to lose by force, the best exact candidate that does not share that forced
+ * mate is preferable regardless of a shallow centipawn disagreement.
  */
 export function searchWithPracticalSafety(engine, position, options = {}) {
   const automatic = practicalSafetyExclusions(position, options);
   const result = engine.search(position, options);
 
-  if (!automatic.length || !result.move) {
+  if (!result.move) {
     return {
       ...result,
       practicalSafety: { triggered: false, rescued: false, exclusions: automatic },
@@ -168,45 +184,58 @@ export function searchWithPracticalSafety(engine, position, options = {}) {
 
   const hazards = new Map(automatic.map(item => [item.uci, item]));
   const selectedUci = moveToUci(result.move);
-  const selectedHazard = hazards.get(selectedUci);
+  const selectedHazard = hazards.get(selectedUci) || null;
+  const selectedMate = mateProbe(position, result.move, result);
 
-  if (!selectedHazard) {
-    return {
-      ...result,
-      practicalSafety: { triggered: false, rescued: false, exclusions: automatic },
-    };
-  }
-
-  const objective = result.objectiveScore ?? result.score ?? 0;
-  const candidates = (result.candidates || [])
-    .filter(candidate => candidate.uci !== selectedUci)
-    .filter(candidate => !hazards.has(candidate.uci))
-    .filter(candidate => candidate.exact !== false)
-    .filter(candidate => candidate.score >= objective - SAFETY_RESCUE_WINDOW)
-    .sort((a, b) => b.score - a.score);
-
-  const rescue = candidates[0];
-  if (!rescue) {
+  if (!selectedHazard && !selectedMate.forced) {
     return {
       ...result,
       practicalSafety: {
-        triggered: true,
+        triggered: false,
         rescued: false,
-        selectedHazard,
         exclusions: automatic,
+        mateProbe: selectedMate,
       },
     };
   }
 
-  const move = position.moveFromUci(rescue.uci);
-  if (!move) {
+  const objective = result.objectiveScore ?? result.score ?? 0;
+  let mateProbeNodes = selectedMate.nodes;
+  const candidates = (result.candidates || [])
+    .filter(candidate => candidate.uci !== selectedUci)
+    .filter(candidate => candidate.exact !== false)
+    .filter(candidate => !selectedHazard || !hazards.has(candidate.uci))
+    .filter(candidate => selectedMate.forced || candidate.score >= objective - SAFETY_RESCUE_WINDOW)
+    .sort((a, b) => b.score - a.score);
+
+  let rescue = null;
+  let rescueMove = null;
+  for (const candidate of candidates) {
+    const move = position.moveFromUci(candidate.uci);
+    if (!move) continue;
+
+    if (selectedMate.forced) {
+      const probe = forcedCheckingMateProbe(position, move);
+      mateProbeNodes += probe.nodes;
+      if (probe.forced) continue;
+    }
+
+    rescue = candidate;
+    rescueMove = move;
+    break;
+  }
+
+  if (!rescue || !rescueMove) {
     return {
       ...result,
       practicalSafety: {
         triggered: true,
         rescued: false,
-        selectedHazard,
+        selectedHazard: selectedHazard || (selectedMate.forced
+          ? { uci: selectedUci, loss: 99000, reason: 'forced-checking-mate' }
+          : null),
         exclusions: automatic,
+        mateProbe: { forced: selectedMate.forced, nodes: mateProbeNodes },
       },
     };
   }
@@ -214,16 +243,19 @@ export function searchWithPracticalSafety(engine, position, options = {}) {
   const pv = rebuildPv(position, rescue.pv || [rescue.uci]);
   return {
     ...result,
-    move,
+    move: rescueMove,
     score: rescue.score + (rescue.personality || 0),
     objectiveScore: rescue.score,
-    pv: pv.length ? pv : [move],
+    pv: pv.length ? pv : [rescueMove],
     practicalSafety: {
       triggered: true,
       rescued: true,
-      selectedHazard,
+      selectedHazard: selectedHazard || (selectedMate.forced
+        ? { uci: selectedUci, loss: 99000, reason: 'forced-checking-mate' }
+        : null),
       rescue: { uci: rescue.uci, score: rescue.score },
       exclusions: automatic,
+      mateProbe: { forced: selectedMate.forced, nodes: mateProbeNodes },
     },
   };
 }
