@@ -12,8 +12,37 @@ permissions:
   contents: read
 
 jobs:
+  prepare-stockfish:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download and verify official Stockfish 18 AVX2
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-ubuntu-x86-64-avx2.tar'
+          SHA256='536c0c2c0cf06450df0bfb5e876ef0d3119950703a8f143627f990c7b5417964'
+          curl -fL "$URL" -o /tmp/stockfish18.tar
+          echo "$SHA256  /tmp/stockfish18.tar" | sha256sum -c -
+          mkdir -p /tmp/stockfish18-extract stockfish-artifact
+          tar -xf /tmp/stockfish18.tar -C /tmp/stockfish18-extract
+          SF_BIN="$(find /tmp/stockfish18-extract -type f -name 'stockfish-ubuntu-x86-64-avx2' -print -quit)"
+          test -n "$SF_BIN"
+          cp "$SF_BIN" stockfish-artifact/stockfish18
+          chmod +x stockfish-artifact/stockfish18
+          UCI_OUTPUT="$(printf 'uci\nquit\n' | stockfish-artifact/stockfish18)"
+          echo "$UCI_OUTPUT" | grep '^id name Stockfish 18'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stockfish18-avx2
+          path: stockfish-artifact/stockfish18
+          if-no-files-found: error
+          retention-days: 1
+
   audit-shard:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
+    needs: prepare-stockfish
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -26,22 +55,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Install official Stockfish 18 AVX2
+      - uses: actions/download-artifact@v4
+        with:
+          name: stockfish18-avx2
+          path: .sf18
+      - name: Activate Stockfish 18
         shell: bash
         run: |
-          set -euo pipefail
-          URL='https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-ubuntu-x86-64-avx2.tar'
-          SHA256='536c0c2c0cf06450df0bfb5e876ef0d3119950703a8f143627f990c7b5417964'
-          curl -fL "$URL" -o /tmp/stockfish18.tar
-          echo "$SHA256  /tmp/stockfish18.tar" | sha256sum -c -
-          mkdir -p /tmp/stockfish18
-          tar -xf /tmp/stockfish18.tar -C /tmp/stockfish18
-          SF_BIN="$(find /tmp/stockfish18 -type f -name 'stockfish-ubuntu-x86-64-avx2' -print -quit)"
-          test -n "$SF_BIN"
-          chmod +x "$SF_BIN"
-          echo "STOCKFISH_BIN=$SF_BIN" >> "$GITHUB_ENV"
-          printf 'uci\nquit\n' | "$SF_BIN" | grep -m1 '^id name Stockfish 18'
+          chmod +x .sf18/stockfish18
+          echo "STOCKFISH_BIN=$GITHUB_WORKSPACE/.sf18/stockfish18" >> "$GITHUB_ENV"
+          UCI_OUTPUT="$(printf 'uci\nquit\n' | .sf18/stockfish18)"
+          echo "$UCI_OUTPUT" | grep '^id name Stockfish 18'
 
       - name: Play 256-game production Vanta shard
         env:
