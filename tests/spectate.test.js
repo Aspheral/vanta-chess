@@ -24,12 +24,16 @@ test('every spectate opening seed is legal from the initial position',()=>{
 test('spectate boot path and ultra profile are wired into the browser client',()=>{
   const boot=fs.readFileSync(new URL('../src/boot.js',import.meta.url),'utf8');
   const ui=fs.readFileSync(new URL('../src/spectate-ui.js',import.meta.url),'utf8');
+  const worker=fs.readFileSync(new URL('../src/engine/worker.js',import.meta.url),'utf8');
   assert.match(boot,/spectate.*===.*1/s);
   assert.match(boot,/Spectate/);
   assert.match(ui,/targetElo:3000/);
   assert.match(ui,/maxDepth:12/);
   assert.match(ui,/nodeLimit:4500000/);
   assert.match(ui,/StockfishClient/);
+  assert.match(worker,/import \{ CriticalSearchEngine \} from '\.\/critical-search\.js';/);
+  assert.match(worker,/let engine=new CriticalSearchEngine\(\);/);
+  assert.match(worker,/engine=new CriticalSearchEngine\(msg\.config\|\|\{\}\);/);
 });
 
 test('Stockfish is pinned to a portable single-thread browser package with JS fallback',()=>{
