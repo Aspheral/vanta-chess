@@ -15,7 +15,7 @@ jobs:
   play:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -66,6 +66,8 @@ jobs:
           STRESS_SHARDS: '25'
           STRESS_ELO: '1650'
           STRESS_MOVE_MS: '650'
+          STRESS_VANTA_NODES: '420000'
+          STRESS_STOCKFISH_NODES: '800000'
           STRESS_MAX_PLIES: '120'
           STRESS_SEED: '20260829'
           STRESS_REPORT: benchmarks/stress-1650-shard-${{ matrix.shard }}.json
