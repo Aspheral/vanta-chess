@@ -15,7 +15,7 @@ jobs:
   play:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'stress-1650')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -31,16 +31,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y stockfish
           test -x /usr/games/stockfish
-      - name: Select persistent gate search path
+      - name: Select persistent strongest available gate search path
         run: |
           python - <<'PY'
           from pathlib import Path
           p=Path('src/engine/stress-match.js')
           s=p.read_text()
-          s=s.replace(
-              "import { SearchEngine } from './search.js';",
-              "import { GateSearchEngine as SearchEngine } from './gate-search.js';",
-          )
+          if Path('src/engine/critical-search.js').exists():
+              search_import = "import { CriticalSearchEngine as SearchEngine } from './critical-search.js';"
+          else:
+              search_import = "import { GateSearchEngine as SearchEngine } from './gate-search.js';"
+          s=s.replace("import { SearchEngine } from './search.js';", search_import)
           s=s.replace(
               "function productionVantaMove(game) {",
               "function productionVantaMove(game, engine) {",
@@ -66,6 +67,8 @@ jobs:
           STRESS_SHARDS: '25'
           STRESS_ELO: '1650'
           STRESS_MOVE_MS: '650'
+          STRESS_VANTA_NODES: '420000'
+          STRESS_STOCKFISH_NODES: '800000'
           STRESS_MAX_PLIES: '120'
           STRESS_SEED: '20260829'
           STRESS_REPORT: benchmarks/stress-1650-shard-${{ matrix.shard }}.json
