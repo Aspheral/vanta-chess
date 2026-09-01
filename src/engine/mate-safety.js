@@ -3,7 +3,8 @@ import { FLAGS } from '../chess/position.js';
 const DEFAULT_MAX_CHECKS = 5;
 const DEFAULT_CHECK_NODE_LIMIT = 5000;
 const DEFAULT_MAX_PLIES = 9;
-const DEFAULT_QUIET_NODE_LIMIT = 24000;
+const DEFAULT_ONE_QUIET_NODE_LIMIT = 24000;
+const DEFAULT_TWO_QUIET_NODE_LIMIT = 48000;
 const PROVEN = 1;
 const REFUTED = 0;
 const UNKNOWN = -1;
@@ -16,7 +17,7 @@ function orderedMoves(position, legal) {
       if (next.isInCheck()) priority += 100000;
       if (move.flags & FLAGS.CAPTURE) priority += 1000;
       if (move.promotion) priority += 500;
-      return { move, next, givesCheck: next.isInCheck(), priority };
+      return { next, givesCheck: next.isInCheck(), priority };
     })
     .sort((a, b) => b.priority - a.priority);
 }
@@ -64,15 +65,12 @@ function checkingMateWithin(position, attacker, checksLeft, budget) {
 }
 
 /**
- * Stage two: exact bounded mate proof with at most one quiet attacker setup.
- *
- * This covers the important horizon pattern the checking-only prover misses,
- * while avoiding the explosive tree of allowing arbitrary quiet attacker moves
- * at every ply. The defender is still exhaustive: every legal reply has to
- * remain inside the mating tree. UNKNOWN propagates on budget exhaustion, so
- * this seatbelt always fails open rather than vetoing an unproven sacrifice.
+ * Exact bounded mate proof with a small allowance of quiet attacker setup
+ * moves. The attacker needs one winning continuation; the defender gets every
+ * legal response. Budget exhaustion returns UNKNOWN, so callers always fail
+ * open rather than vetoing an unproven sacrifice.
  */
-function oneQuietMateWithin(position, attacker, pliesLeft, quietsLeft, budget, memo) {
+function limitedQuietMateWithin(position, attacker, pliesLeft, quietsLeft, budget, memo) {
   if (budget.nodes >= budget.limit) {
     budget.exhausted = true;
     return UNKNOWN;
@@ -93,7 +91,7 @@ function oneQuietMateWithin(position, attacker, pliesLeft, quietsLeft, budget, m
     let sawUnknown = false;
     for (const { next, givesCheck } of orderedMoves(position, legal)) {
       if (!givesCheck && quietsLeft <= 0) continue;
-      const result = oneQuietMateWithin(
+      const result = limitedQuietMateWithin(
         next,
         attacker,
         pliesLeft - 1,
@@ -114,7 +112,7 @@ function oneQuietMateWithin(position, attacker, pliesLeft, quietsLeft, budget, m
 
   let sawUnknown = false;
   for (const { next } of orderedMoves(position, legal)) {
-    const result = oneQuietMateWithin(next, attacker, pliesLeft - 1, quietsLeft, budget, memo);
+    const result = limitedQuietMateWithin(next, attacker, pliesLeft - 1, quietsLeft, budget, memo);
     if (result === REFUTED) {
       memo.set(key, REFUTED);
       return REFUTED;
@@ -124,6 +122,12 @@ function oneQuietMateWithin(position, attacker, pliesLeft, quietsLeft, budget, m
   if (sawUnknown) return UNKNOWN;
   memo.set(key, PROVEN);
   return PROVEN;
+}
+
+function runQuietStage(after, attacker, maxPlies, quiets, limit) {
+  const budget = { nodes: 0, limit, exhausted: false };
+  const result = limitedQuietMateWithin(after, attacker, maxPlies, quiets, budget, new Map());
+  return { result, budget };
 }
 
 export function forcedMateProbe(position, move, options = {}) {
@@ -153,16 +157,34 @@ export function forcedMateProbe(position, move, options = {}) {
   }
 
   const maxPlies = Math.max(1, Number(options.maxPlies) || DEFAULT_MAX_PLIES);
-  const quietNodeLimit = Math.max(128, Number(options.nodeLimit) || DEFAULT_QUIET_NODE_LIMIT);
-  const quietBudget = { nodes: 0, limit: quietNodeLimit, exhausted: false };
-  const quietResult = oneQuietMateWithin(after, attacker, maxPlies, 1, quietBudget, new Map());
+  const oneQuietLimit = Math.max(
+    128,
+    Number(options.oneQuietNodeLimit ?? options.nodeLimit) || DEFAULT_ONE_QUIET_NODE_LIMIT,
+  );
+  const oneQuiet = runQuietStage(after, attacker, maxPlies, 1, oneQuietLimit);
+  if (oneQuiet.result === PROVEN) {
+    return {
+      forced: true,
+      nodes: checkBudget.nodes + oneQuiet.budget.nodes,
+      exhausted: oneQuiet.budget.exhausted,
+      matePlies: maxPlies,
+      stage: 'one-quiet',
+    };
+  }
+
+  const twoQuietLimit = Math.max(
+    128,
+    Number(options.twoQuietNodeLimit) || DEFAULT_TWO_QUIET_NODE_LIMIT,
+  );
+  const twoQuiet = runQuietStage(after, attacker, maxPlies, 2, twoQuietLimit);
+  const totalNodes = checkBudget.nodes + oneQuiet.budget.nodes + twoQuiet.budget.nodes;
 
   return {
-    forced: quietResult === PROVEN,
-    nodes: checkBudget.nodes + quietBudget.nodes,
-    exhausted: quietBudget.exhausted,
-    matePlies: quietResult === PROVEN ? maxPlies : null,
-    stage: quietResult === PROVEN ? 'one-quiet' : null,
+    forced: twoQuiet.result === PROVEN,
+    nodes: totalNodes,
+    exhausted: twoQuiet.budget.exhausted,
+    matePlies: twoQuiet.result === PROVEN ? maxPlies : null,
+    stage: twoQuiet.result === PROVEN ? 'two-quiet' : null,
   };
 }
 
