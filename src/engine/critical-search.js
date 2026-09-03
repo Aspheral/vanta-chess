@@ -2,8 +2,14 @@ import { FLAGS, moveToUci } from '../chess/position.js';
 import { MATE_SCORE } from './evaluation.js';
 import { GateSearchEngine } from './gate-search.js';
 import { positionCriticality } from './tactics.js';
+import { VANTA_PERSONALITY } from './personality.js';
+import { isSeriouslyLosing, materialLead } from './draw-policy.js';
 
 const INF = 1_000_000;
+const STALEMATE_OBJECTIVE_THRESHOLD = -450;
+const DESPERATE_STALEMATE_THRESHOLD = -700;
+const STALEMATE_MATERIAL_DEFICIT = 500;
+const STALEMATE_TRAP_WINDOW = 90;
 
 function normalRootCap(depth) {
   if (depth <= 2) return Infinity;
@@ -46,6 +52,129 @@ function isForcingRootMove(position, move) {
   return position.makeMove(move).isInCheck();
 }
 
+function isStalemate(position) {
+  return !position.isInCheck() && position.legalMoves().length === 0;
+}
+
+function shouldSeekStalemate(position, objectiveScore) {
+  const score = Number(objectiveScore) || 0;
+  const material = materialLead(position, position.turn);
+  if (score <= DESPERATE_STALEMATE_THRESHOLD) return true;
+  if (score <= STALEMATE_OBJECTIVE_THRESHOLD && material <= 0) return true;
+  return material <= -STALEMATE_MATERIAL_DEFICIT && score <= 0;
+}
+
+function stalemateReplyStats(position, move) {
+  const after = position.makeMove(move);
+  const replies = after.legalMoves();
+  if (!replies.length) {
+    const immediate = !after.isInCheck();
+    return {
+      immediate,
+      forced: immediate,
+      stalematingReplies: immediate ? 1 : 0,
+      replyCount: 0,
+    };
+  }
+
+  let stalematingReplies = 0;
+  for (const reply of replies) {
+    const afterReply = after.makeMove(reply);
+    if (isStalemate(afterReply)) stalematingReplies++;
+  }
+
+  return {
+    immediate: false,
+    forced: stalematingReplies === replies.length,
+    stalematingReplies,
+    replyCount: replies.length,
+  };
+}
+
+/**
+ * When Vanta is seriously losing, turn stalemate into an explicit swindle
+ * objective. Guaranteed draws always override a losing continuation. If no
+ * forced stalemate exists and the position is catastrophically bad, Vanta may
+ * prefer a near-equal losing root that gives the opponent more ways to
+ * accidentally stalemate it. The trap preference is deliberately limited to a
+ * narrow objective window so desperation never replaces normal defense.
+ */
+export function selectDesperateStalemate(position, result = {}) {
+  const objective = Number(result.objectiveScore ?? result.score ?? 0) || 0;
+  if (!shouldSeekStalemate(position, objective)) return null;
+
+  const legal = position.legalMoves();
+  for (const move of legal) {
+    const after = position.makeMove(move);
+    if (isStalemate(after)) {
+      return {
+        move,
+        score: 0,
+        kind: 'immediate-stalemate',
+        forced: true,
+        stalematingReplies: 1,
+        replyCount: 0,
+      };
+    }
+  }
+
+  const candidates = new Map();
+  if (result.move) {
+    candidates.set(moveToUci(result.move), {
+      move: result.move,
+      score: objective,
+      exact: true,
+    });
+  }
+  for (const candidate of result.candidates || []) {
+    if (candidate.exact === false) continue;
+    const move = position.moveFromUci(candidate.uci);
+    if (!move) continue;
+    candidates.set(candidate.uci, {
+      move,
+      score: Number(candidate.score) || objective,
+      exact: true,
+    });
+  }
+
+  const pool = [...candidates.values()];
+  if (!pool.length) return null;
+  const bestScore = Math.max(...pool.map(candidate => candidate.score));
+  let bestTrap = null;
+
+  for (const candidate of pool) {
+    const stats = stalemateReplyStats(position, candidate.move);
+    if (stats.forced) {
+      return {
+        ...candidate,
+        ...stats,
+        score: 0,
+        kind: 'forced-stalemate',
+      };
+    }
+
+    if (objective > DESPERATE_STALEMATE_THRESHOLD) continue;
+    if (!stats.stalematingReplies) continue;
+    if (candidate.score < bestScore - STALEMATE_TRAP_WINDOW) continue;
+
+    const ratio = stats.stalematingReplies / Math.max(1, stats.replyCount);
+    const trap = {
+      ...candidate,
+      ...stats,
+      kind: 'stalemate-trap',
+      forced: false,
+      ratio,
+    };
+    if (!bestTrap
+      || trap.ratio > bestTrap.ratio
+      || (trap.ratio === bestTrap.ratio && trap.score > bestTrap.score)) {
+      bestTrap = trap;
+    }
+  }
+
+  return bestTrap;
+}
+
 /**
  * GateSearchEngine with criticality-aware root preservation.
  *
@@ -58,8 +187,47 @@ function isForcingRootMove(position, move) {
 export class CriticalSearchEngine extends GateSearchEngine {
   search(position, options = {}) {
     this.rootCriticality = positionCriticality(position);
-    const result = super.search(position, options);
-    return { ...result, rootCriticality: this.rootCriticality };
+    const base = super.search(position, options);
+    const result = { ...base, rootCriticality: this.rootCriticality };
+    if (!result.move) return result;
+
+    const stalemate = selectDesperateStalemate(position, result);
+    if (!stalemate) return result;
+
+    const selectedUci = moveToUci(result.move);
+    const rescueUci = moveToUci(stalemate.move);
+    const rescued = selectedUci !== rescueUci;
+    const objective = stalemate.forced ? 0 : stalemate.score;
+
+    return {
+      ...result,
+      move: stalemate.move,
+      score: objective,
+      objectiveScore: objective,
+      pv: [stalemate.move],
+      selectedRisk: stalemate.forced ? 0 : Math.max(240, Number(result.selectedRisk) || 0),
+      drawStrategy: {
+        kind: stalemate.kind,
+        forced: stalemate.forced,
+        rescued,
+        uci: rescueUci,
+        stalematingReplies: stalemate.stalematingReplies,
+        replyCount: stalemate.replyCount,
+      },
+    };
+  }
+
+  /**
+   * Repetition inside the search tree follows the same policy as root play:
+   * unless the side to move is seriously losing, a loop is actively bad. This
+   * removes the old neutral zone where Vanta could drift into threefold around
+   * equality even though playable winning chances remained.
+   */
+  repetitionUtility(position) {
+    const staticScore = this.staticEval(position);
+    const aversion = 180 + Math.round((VANTA_PERSONALITY.drawAversion / 100) * 520);
+    if (isSeriouslyLosing(position, staticScore)) return Math.round(aversion * 0.55);
+    return -aversion;
   }
 
   searchRoot(position, depth, options = {}) {
