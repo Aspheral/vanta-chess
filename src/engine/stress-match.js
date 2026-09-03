@@ -4,7 +4,7 @@ import { access, mkdir, writeFile } from 'node:fs/promises';
 import { ChessGame } from '../chess/game.js';
 import { WHITE, BLACK, typeOf } from '../chess/constants.js';
 import { moveToUci } from '../chess/position.js';
-import { SearchEngine } from './search.js';
+import { CriticalSearchEngine } from './critical-search.js';
 import { adaptiveStrengthProfile } from './adaptive-strength.js';
 import { repetitionExclusions } from './draw-policy.js';
 import { searchWithPracticalSafety } from './practical-safety.js';
@@ -14,7 +14,7 @@ const SHARD = Number(process.env.STRESS_SHARD || 0);
 const SHARDS = Number(process.env.STRESS_SHARDS || 1);
 const STOCKFISH_ELO = Number(process.env.STRESS_ELO || 1650);
 const MOVE_TIME_MS = Number(process.env.STRESS_MOVE_MS || 650);
-const VANTA_NODE_LIMIT = Number(process.env.STRESS_VANTA_NODES || 30000);
+const VANTA_NODE_LIMIT = Number(process.env.STRESS_VANTA_NODES || 420000);
 const STOCKFISH_NODE_LIMIT = Number(process.env.STRESS_STOCKFISH_NODES || 800000);
 const MAX_PLIES = Number(process.env.STRESS_MAX_PLIES || 120);
 const SEED = Number(process.env.STRESS_SEED || 20260829) >>> 0;
@@ -24,7 +24,7 @@ const OPENING_POOL = [
   ['Italian', ['e2e4','e7e5','g1f3','b8c6','f1c4','g8f6','d2d3','f8c5','c2c3','d7d6']],
   ['Ruy Lopez', ['e2e4','e7e5','g1f3','b8c6','f1b5','a7a6','b5a4','g8f6','e1g1','f8e7']],
   ['Scotch', ['e2e4','e7e5','g1f3','b8c6','d2d4','e5d4','f3d4','g8f6','d4c6','b7c6']],
-  ['Four Knights', ['e2e4','e7e5','g1f3','b8c6','b1c3','g8f6','f1b5','f8b4']],
+  ['Four Knights', ['e2e4','e7e5','b1c3','g8f6','g1f3','b8c6','f1b5','f8b4']],
   ['Vienna', ['e2e4','e7e5','b1c3','g8f6','f2f4','d7d5','f4e5','f6e4']],
   ['Kings Gambit', ['e2e4','e7e5','f2f4','e5f4','g1f3','g7g5','h2h4','g5g4']],
   ['Sicilian Najdorf', ['e2e4','c7c5','g1f3','d7d6','d2d4','c5d4','f3d4','g8f6','b1c3','a7a6']],
@@ -170,7 +170,7 @@ function gamePoint(result, color) {
   return 0.5;
 }
 
-function productionVantaMove(game) {
+function productionVantaMove(game, engine) {
   const position = game.position;
   const profile = adaptiveStrengthProfile(position, { moveTimeMs: MOVE_TIME_MS });
   const nodeLimit = VANTA_NODE_LIMIT > 0 ? VANTA_NODE_LIMIT : profile.nodeLimit;
@@ -188,8 +188,9 @@ function productionVantaMove(game) {
     softTimeMs: fixedWork ? 60000 : Math.min(MOVE_TIME_MS, profile.softTimeMs),
     hardTimeMs: fixedWork ? 60000 : MOVE_TIME_MS,
   };
+  engine.config = { ...engine.config, ...config };
   const run = excludeMoves => searchWithPracticalSafety(
-    new SearchEngine(config),
+    engine,
     position,
     { ...options, excludeMoves },
   );
@@ -202,6 +203,7 @@ function productionVantaMove(game) {
 
 async function playGame(stockfish, opening, vantaColor, gameIndex) {
   const game = setupGame(opening);
+  const engine = new CriticalSearchEngine();
   await stockfish.newGame();
   const startPly = game.cursor;
   const vantaMoves = [];
@@ -211,9 +213,11 @@ async function playGame(stockfish, opening, vantaColor, gameIndex) {
     const status = game.status();
     if (status.over) { terminal = status; break; }
     if (game.position.turn === vantaColor) {
-      const result = productionVantaMove(game);
+      const result = productionVantaMove(game, engine);
       if (!result.move) { terminal = game.status(); break; }
       const move = result.move;
+      const mainNodes = (result.nodes || 0) + (result.qnodes || 0);
+      const mateProbeNodes = result.practicalSafety?.mateProbe?.nodes || 0;
       vantaMoves.push({
         ply: game.cursor + 1,
         uci: moveToUci(move),
@@ -221,7 +225,9 @@ async function playGame(stockfish, opening, vantaColor, gameIndex) {
         capture: Boolean(move.captured),
         promotion: move.promotion || null,
         depth: result.depth,
-        nodes: (result.nodes || 0) + (result.qnodes || 0),
+        nodes: mainNodes,
+        mateProbeNodes,
+        totalEffectiveNodes: mainNodes + mateProbeNodes,
         timeMs: result.timeMs || 0,
         objectiveScore: result.objectiveScore ?? result.score ?? 0,
         selectedRisk: result.selectedRisk || 0,
@@ -298,6 +304,8 @@ async function main() {
       fixedWorkGate: VANTA_NODE_LIMIT > 0 || STOCKFISH_NODE_LIMIT > 0,
       maxPlies: MAX_PLIES,
       seed: SEED,
+      engine: 'CriticalSearchEngine',
+      persistentEnginePerGame: true,
     },
     openings,
     games,
