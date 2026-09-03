@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { ChessGame } from '../src/chess/game.js';
 import { Position, moveToUci } from '../src/chess/position.js';
 import {
+  isRepetitionConcession,
   repetitionExclusions,
   shouldRejectRepetitionMove,
   wouldAllowOpponentThreefold,
 } from '../src/engine/draw-policy.js';
 import { SearchEngine } from '../src/engine/search.js';
 import { CriticalSearchEngine, selectDesperateStalemate } from '../src/engine/critical-search.js';
+import { rootTacticalRisk } from '../src/engine/tactics.js';
 
 test('materially ahead side excludes an avoidable move that would create threefold repetition', () => {
   const game = new ChessGame('r3k3/8/5n2/8/8/5N2/8/4K3 w - - 0 1');
@@ -64,6 +66,15 @@ test('equal-material but winning side excludes a threefold move from objective e
   const dutchRepeat = dutch.position.moveFromUci('a1a2');
   assert.ok(dutchRepeat);
   assert.equal(dutch.wouldCauseThreefold(dutchRepeat), true);
+
+  const dutchEscapeDiagnostics = dutch.position.legalMoves().map(move => ({
+    uci: moveToUci(move),
+    repetition: isRepetitionConcession(dutch, move),
+    risk: rootTacticalRisk(dutch.position, move, new Map()),
+  })).sort((a, b) => a.risk - b.risk || a.uci.localeCompare(b.uci));
+  console.log('DUTCH_REPETITION_DIAGNOSTICS', JSON.stringify(dutchEscapeDiagnostics));
+  console.log('DUTCH_REPETITION_EXCLUSIONS', JSON.stringify(repetitionExclusions(dutch, 375)));
+
   assert.equal(shouldRejectRepetitionMove(dutch, dutchRepeat, 375), true);
   assert.ok(repetitionExclusions(dutch, 375).includes('a1a2'));
 });
