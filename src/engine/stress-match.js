@@ -24,7 +24,7 @@ const OPENING_POOL = [
   ['Italian', ['e2e4','e7e5','g1f3','b8c6','f1c4','g8f6','d2d3','f8c5','c2c3','d7d6']],
   ['Ruy Lopez', ['e2e4','e7e5','g1f3','b8c6','f1b5','a7a6','b5a4','g8f6','e1g1','f8e7']],
   ['Scotch', ['e2e4','e7e5','g1f3','b8c6','d2d4','e5d4','f3d4','g8f6','d4c6','b7c6']],
-  ['Four Knights', ['e2e4','e7e5','b1c3','g8f6','g1f3','b8c6','f1b5','f8b4']],
+  ['Four Knights', ['e2e4','e7e5','g1f3','b8c6','b1c3','g8f6','f1b5','f8b4']],
   ['Vienna', ['e2e4','e7e5','b1c3','g8f6','f2f4','d7d5','f4e5','f6e4']],
   ['Kings Gambit', ['e2e4','e7e5','f2f4','e5f4','g1f3','g7g5','h2h4','g5g4']],
   ['Sicilian Najdorf', ['e2e4','c7c5','g1f3','d7d6','d2d4','c5d4','f3d4','g8f6','b1c3','a7a6']],
