@@ -54,6 +54,18 @@ for (let i = 1; i <= 48; i++) {
     assert.ok(Number.isFinite(black));
     assert.equal(white, -black, `perspective leak in ${position.toFEN()}`);
     assert.ok(Math.abs(white) < 200000, 'non-mate static score escaped sane bounds');
+
+    if (i === 1) {
+      // Same material and symmetric bishop activity. On e2 the bishop blocks a
+      // rook lane to the white king, so the hot evaluator should prefer the
+      // defensive interposition over leaving the e-file completely exposed.
+      const exposed = Position.fromFEN('q3r1k1/8/8/8/8/8/3B4/Q3K3 w - - 0 1');
+      const blocked = Position.fromFEN('q3r1k1/8/8/8/8/8/4B3/Q3K3 w - - 0 1');
+      assert.ok(
+        fastEvaluate(blocked, 'w') > fastEvaluate(exposed, 'w'),
+        'fast evaluator should value a quiet interposition on a direct king ray',
+      );
+    }
   });
 }
 
