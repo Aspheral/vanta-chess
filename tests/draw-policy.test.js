@@ -47,6 +47,25 @@ test('equal-material but winning side excludes a threefold move from objective e
   assert.ok(engine.repetitionUtility(game.position) < 0);
   const losing = Position.fromFEN('q6k/8/8/8/8/8/8/4K3 w - - 0 1');
   assert.ok(engine.repetitionUtility(losing) > 0);
+
+  // Exact live stress regression from the Dutch game that still repeated at
+  // roughly +3.75. Rebuild the game immediately before 56...Ra2 and verify the
+  // history-aware policy identifies that move as the third occurrence.
+  const dutch = new ChessGame();
+  const dutchHistory = [
+    'd2d4','f7f5','c2c4','g8f6','b1c3','g7g6','h2h4','f8g7','c1g5','e8g8',
+    'd1d2','f6e4','c3e4','f5e4','g1h3','b8c6','g5h6','f8f7','e1c1','g7d4',
+    'h4h5','g6h5','h3g5','f7f2','g5h3','f2f6','e2e3','d4e5','h6g5','f6d6',
+    'd2f2','a7a5','f2h4','c6b4','d1d6','c7d6','c1b1','d8b6','g5h6','b4d5',
+    'b2b3','d5c3','b1c2','a5a4','h4e7','a4b3','a2b3','a8a2','c2c1','a2a1',
+    'c1c2','a1a2','c2c1','a2a1','c1c2',
+  ];
+  for (const uci of dutchHistory) dutch.playUci(uci);
+  const dutchRepeat = dutch.position.moveFromUci('a1a2');
+  assert.ok(dutchRepeat);
+  assert.equal(dutch.wouldCauseThreefold(dutchRepeat), true);
+  assert.equal(shouldRejectRepetitionMove(dutch, dutchRepeat, 375), true);
+  assert.ok(repetitionExclusions(dutch, 375).includes('a1a2'));
 });
 
 test('winning Vanta rejects a move that lets the opponent complete threefold next ply', () => {
