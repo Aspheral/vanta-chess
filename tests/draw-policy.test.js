@@ -8,6 +8,7 @@ import {
   wouldAllowOpponentThreefold,
 } from '../src/engine/draw-policy.js';
 import { SearchEngine } from '../src/engine/search.js';
+import { CriticalSearchEngine, selectDesperateStalemate } from '../src/engine/critical-search.js';
 
 test('materially ahead side excludes an avoidable move that would create threefold repetition', () => {
   const game = new ChessGame('r3k3/8/5n2/8/8/5N2/8/4K3 w - - 0 1');
@@ -28,9 +29,24 @@ test('equal-material but winning side excludes a threefold move from objective e
   const repeat = game.position.moveFromUci('f6g8');
   assert.ok(repeat);
   assert.equal(game.wouldCauseThreefold(repeat), true);
-  assert.deepEqual(repetitionExclusions(game, 0), []);
+
+  // Equality is no longer a draw-neutral zone. With playable winning chances,
+  // Vanta keeps the game alive instead of volunteering a half-point.
+  assert.ok(repetitionExclusions(game, 0).includes('f6g8'));
   assert.ok(repetitionExclusions(game, 150).includes('f6g8'));
   assert.equal(shouldRejectRepetitionMove(game, repeat, 150), true);
+
+  // Once the objective evaluation says the position is genuinely lost, the
+  // same repetition becomes a valid survival resource.
+  assert.deepEqual(repetitionExclusions(game, -300), []);
+  assert.equal(shouldRejectRepetitionMove(game, repeat, -300), false);
+
+  // The production search class must agree internally, otherwise it can waste
+  // its tree steering toward loops that the root policy later has to reject.
+  const engine = new CriticalSearchEngine({ evalNoise: 0 });
+  assert.ok(engine.repetitionUtility(game.position) < 0);
+  const losing = Position.fromFEN('q6k/8/8/8/8/8/8/4K3 w - - 0 1');
+  assert.ok(engine.repetitionUtility(losing) > 0);
 });
 
 test('winning Vanta rejects a move that lets the opponent complete threefold next ply', () => {
@@ -55,4 +71,30 @@ test('root exclusions are honored by the search engine', () => {
   const engine = new SearchEngine({ maxDepth: 1, moveTimeMs: 1000, nodeLimit: 100000, selectionWindow: 0, evalNoise: 0 });
   const result = engine.search(position, { maxDepth: 1, moveTimeMs: 1000, excludeMoves });
   assert.equal(moveToUci(result.move), keep);
+
+  // In this synthetic lost-result scenario Kc7 creates immediate stalemate:
+  // black Ka8 has no legal square, but is not in check. The desperate draw
+  // strategy must recognize that escape even if the original result chose a
+  // different move.
+  const stalematePosition = Position.fromFEN('k7/8/2K5/8/3B4/8/8/8 w - - 0 1');
+  const knownStalemate = stalematePosition.moveFromUci('c6c7');
+  assert.ok(knownStalemate);
+  const afterKnown = stalematePosition.makeMove(knownStalemate);
+  assert.equal(afterKnown.isInCheck(), false);
+  assert.equal(afterKnown.legalMoves().length, 0);
+
+  const fallback = stalematePosition.legalMoves().find(move => moveToUci(move) !== 'c6c7');
+  assert.ok(fallback);
+  const rescue = selectDesperateStalemate(stalematePosition, {
+    move: fallback,
+    score: -900,
+    objectiveScore: -900,
+    candidates: [],
+  });
+  assert.ok(rescue);
+  assert.equal(rescue.forced, true);
+  assert.equal(rescue.kind, 'immediate-stalemate');
+  const afterRescue = stalematePosition.makeMove(rescue.move);
+  assert.equal(afterRescue.isInCheck(), false);
+  assert.equal(afterRescue.legalMoves().length, 0);
 });
