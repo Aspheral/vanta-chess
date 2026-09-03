@@ -57,7 +57,8 @@ function isStalemate(position) {
 }
 
 function shouldSeekStalemate(position, objectiveScore) {
-  const score = Number(objectiveScore) || 0;
+  const numeric = Number(objectiveScore);
+  const score = Number.isFinite(numeric) ? numeric : 0;
   const material = materialLead(position, position.turn);
   if (score <= DESPERATE_STALEMATE_THRESHOLD) return true;
   if (score <= STALEMATE_OBJECTIVE_THRESHOLD && material <= 0) return true;
@@ -100,7 +101,8 @@ function stalemateReplyStats(position, move) {
  * narrow objective window so desperation never replaces normal defense.
  */
 export function selectDesperateStalemate(position, result = {}) {
-  const objective = Number(result.objectiveScore ?? result.score ?? 0) || 0;
+  const objectiveValue = Number(result.objectiveScore ?? result.score ?? 0);
+  const objective = Number.isFinite(objectiveValue) ? objectiveValue : 0;
   if (!shouldSeekStalemate(position, objective)) return null;
 
   const legal = position.legalMoves();
@@ -130,9 +132,10 @@ export function selectDesperateStalemate(position, result = {}) {
     if (candidate.exact === false) continue;
     const move = position.moveFromUci(candidate.uci);
     if (!move) continue;
+    const candidateValue = Number(candidate.score);
     candidates.set(candidate.uci, {
       move,
-      score: Number(candidate.score) || objective,
+      score: Number.isFinite(candidateValue) ? candidateValue : objective,
       exact: true,
     });
   }
