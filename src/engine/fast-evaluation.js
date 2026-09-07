@@ -1,4 +1,7 @@
-import { WHITE, PIECE_VALUES, colorOf, typeOf, rowCol } from '../chess/constants.js';
+import {
+  WHITE, PIECE_VALUES, colorOf, typeOf, rowCol, inBounds,
+  KNIGHT_DELTAS, BISHOP_DIRS, ROOK_DIRS,
+} from '../chess/constants.js';
 
 const CENTER_FILE = [3.5, 2.5, 1.5, 0.5, 0.5, 1.5, 2.5, 3.5];
 const CENTER_RANK = CENTER_FILE;
@@ -89,6 +92,77 @@ function kingShield(board, kingSquare, color, phase) {
   return Math.round(shield * phase);
 }
 
+/**
+ * Search-hot-path king danger. This deliberately stops far short of building
+ * a full attack map. Eight rays plus fixed pawn/knight source checks are enough
+ * to notice direct heavy-piece lanes and x-rays that quiet interpositions can
+ * close, while keeping the term cheap enough for hundreds of thousands of
+ * alpha-beta leaves.
+ */
+function kingRayPressure(board, kingSquare, color, phase) {
+  if (kingSquare < 0 || phase < 0.18) return 0;
+  const enemy = color === WHITE ? 'b' : 'w';
+  const [row, file] = rowCol(kingSquare);
+  let pressure = 0;
+
+  // Pawn and knight attacks on the king itself. Search handles checks, but
+  // reflecting them in the leaf score helps the horizon prefer quiet escapes.
+  const pawnSourceRow = row + (enemy === WHITE ? 1 : -1);
+  if (pawnSourceRow >= 0 && pawnSourceRow < 8) {
+    const enemyPawn = enemy === WHITE ? 'P' : 'p';
+    for (const dc of [-1, 1]) {
+      const cc = file + dc;
+      if (inBounds(pawnSourceRow, cc) && board[pawnSourceRow * 8 + cc] === enemyPawn) pressure += 15;
+    }
+  }
+  const enemyKnight = enemy === WHITE ? 'N' : 'n';
+  for (const [dr, dc] of KNIGHT_DELTAS) {
+    const rr = row + dr, cc = file + dc;
+    if (inBounds(rr, cc) && board[rr * 8 + cc] === enemyKnight) pressure += 18;
+  }
+
+  const scan = (dirs, sliderTypes, directBase) => {
+    for (const [dr, dc] of dirs) {
+      let rr = row + dr, cc = file + dc;
+      let blocker = null;
+      while (inBounds(rr, cc)) {
+        const piece = board[rr * 8 + cc];
+        if (!piece) {
+          rr += dr;
+          cc += dc;
+          continue;
+        }
+        const pieceColor = colorOf(piece);
+        const pieceType = typeOf(piece);
+        if (blocker == null) {
+          if (pieceColor === enemy && sliderTypes.includes(pieceType)) {
+            pressure += directBase + (pieceType === 'q' ? 4 : 0);
+            break;
+          }
+          if (pieceColor === color) {
+            blocker = pieceType;
+            rr += dr;
+            cc += dc;
+            continue;
+          }
+          break;
+        }
+        // One friendly blocker in front of an enemy slider is still a tactical
+        // load. Pawns are sturdier shields than loose pieces, so x-rays through
+        // a pawn receive a smaller penalty.
+        if (pieceColor === enemy && sliderTypes.includes(pieceType)) {
+          pressure += blocker === 'p' ? 4 : 8;
+        }
+        break;
+      }
+    }
+  };
+
+  scan(BISHOP_DIRS, ['b', 'q'], 18);
+  scan(ROOK_DIRS, ['r', 'q'], 22);
+  return Math.round(pressure * phase);
+}
+
 function openingDiscipline(position, piecesByColor, kings, phase) {
   if (position.fullmove > 16 || phase < 0.45) return 0;
   let score = 0;
@@ -141,10 +215,10 @@ function rookFileActivity(pawnsByColor, rooksByColor) {
 }
 
 /**
- * Search-hot-path evaluation. It intentionally avoids attack-map construction,
- * legal move generation, and nested exchange calculations. The richer public
- * evaluator remains available for analysis/UI, while alpha-beta gets a stable,
- * material-first tapered score cheap enough to reach real depth.
+ * Search-hot-path evaluation. It intentionally avoids full attack-map
+ * construction, legal move generation, and nested exchange calculations. The
+ * richer public evaluator remains available for analysis/UI, while alpha-beta
+ * gets a stable, material-first tapered score cheap enough to reach real depth.
  */
 export function fastEvaluate(position, perspective = position.turn) {
   const board = position.board;
@@ -182,6 +256,8 @@ export function fastEvaluate(position, perspective = position.turn) {
   whiteScore += pawnStructure(board, pawnsByColor);
   whiteScore += kingShield(board, kings.w, 'w', phase);
   whiteScore -= kingShield(board, kings.b, 'b', phase);
+  whiteScore -= kingRayPressure(board, kings.w, 'w', phase);
+  whiteScore += kingRayPressure(board, kings.b, 'b', phase);
   whiteScore += openingDiscipline(position, piecesByColor, kings, phase);
   whiteScore += rookFileActivity(pawnsByColor, rooksByColor);
 
