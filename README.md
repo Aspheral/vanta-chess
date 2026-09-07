@@ -156,3 +156,12 @@ src/ui/          board rendering and prediction arrows
 tests/           rules, perft, search, personality regressions
 benchmarks/      generated benchmark snapshot
 ```
+
+
+## Move commentary
+
+Vanta's thoughts appears in normal play and the arena. It explains every Vanta move and selectively comments on opponent checks, captures, promotions, castling, and pressure on pieces. Use the On/Off button to toggle it. Comments follow the game timeline when undoing, redoing, or starting a new line.
+
+The generator runs locally without an API key, network request, or extra engine search. It combines a broad phrase bank with actual board facts and avoids recently used phrases in each category. Introductions, positional observations, and conditional continuations vary independently, allowing thousands of combinations for positions with multiple features and a calculated line. It is a chess-aware procedural generator, not a language model: it describes observable effects rather than claiming to know the engine's internal reasoning. Piece pressure is geometric influence, not a guarantee of a legal or winning capture. Possible continuations are checked for legality and only used when the engine line begins with the move actually played. It does not invent mating nets or label every move great.
+
+Run `node --test tests/commentary.test.js` for the commentary regression tests.

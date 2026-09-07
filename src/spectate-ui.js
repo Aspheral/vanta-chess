@@ -1,3 +1,4 @@
+import { MoveCommentator, recordCommentary, commentaryPanel } from './engine/commentary.js';
 import {ChessGame} from './chess/game.js';
 import {WHITE,BLACK} from './chess/constants.js';
 import {BoardView} from './ui/board.js';
@@ -40,6 +41,7 @@ class UltraSpectate{
   constructor(root){
     this.root=root;
     this.game=new ChessGame();
+    this.commentator=new MoveCommentator();this.commentaryEnabled=true;
     this.vantaColor=Math.random()<.5?WHITE:BLACK;
     this.stockfishColor=this.vantaColor===WHITE?BLACK:WHITE;
     this.opening=null;
@@ -77,7 +79,7 @@ class UltraSpectate{
           <div class="board-wrap spectate-board" id="spectateBoard"></div>
           <div class="spectate-underboard"><div><span class="spectate-pulse"></span><b id="spectateStatus">Preparing…</b></div><div class="spectate-controls"><button class="icon-btn" id="spectateFlip" title="Flip board">⇅</button><button class="btn" id="spectatePause">Pause</button></div></div>
         </section>
-        <aside class="spectate-rail">
+        <aside class="spectate-rail"><div id="spectateCommentary"></div>
           <section class="panel broadcast-card"><div class="panel-head"><span class="panel-title">Live broadcast</span><span class="panel-sub">engine vs engine</span></div>
             <div class="broadcast-body"><div class="broadcast-turn"><span id="turnEngine">—</span><b id="turnState">waiting</b></div><div class="eval-big" id="liveEval">—</div><div class="broadcast-pv" id="livePv">Waiting for calculation…</div>
               <div class="ultra-metrics"><div><span>Depth</span><b id="liveDepth">0</b></div><div><span>Nodes</span><b id="liveNodes">0</b></div><div><span>NPS</span><b id="liveNps">0</b></div><div><span>Think</span><b id="liveTime">0s</b></div></div>
@@ -177,7 +179,9 @@ class UltraSpectate{
       await delay(650);
       if(generation!==this.generation||this.paused)return;
       this.currentArrow=null;
+      const before=this.game.position;
       this.game.play(move);
+      if(this.commentaryEnabled)recordCommentary(this.game,this.commentator,before,move,{isVanta,pv:isVanta?this.vantaInfo?.pv||[]:[]});
       this.renderBoard();this.renderHistory();this.updateStaticUi();
       const after=this.game.status();
       if(after.over){this.finish(after);return;}
@@ -206,7 +210,14 @@ class UltraSpectate{
     this.board.render(this.game.position,{orientation:this.orientation||WHITE,interactive:false,lastMove:snap.lastMove,analysisArrow:this.currentArrow,predictionArrows:false,branches:[],animateMoves:true,sounds:true,checkSquare:this.game.position.isInCheck(this.game.position.turn)?this.game.position.kingSquare(this.game.position.turn):null});
   }
 
+  renderCommentary(){
+    const el=this.root.querySelector('#spectateCommentary');
+    el.innerHTML=commentaryPanel(this.game,this.commentaryEnabled);
+    el.querySelector('[data-commentary-toggle]').onclick=()=>{this.commentaryEnabled=!this.commentaryEnabled;this.renderCommentary();};
+  }
+
   renderHistory(){
+    this.renderCommentary();
     const rows=this.game.moveRows();
     const el=this.root.querySelector('#spectateHistory');
     el.innerHTML=rows.length?rows.map(r=>`<div class="spectate-move"><span>${r.move}.</span><b>${r.white||'…'}</b><b>${r.black||''}</b></div>`).join(''):'<div class="empty">Opening moves will appear here.</div>';
