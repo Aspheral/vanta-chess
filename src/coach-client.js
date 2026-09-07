@@ -2,7 +2,7 @@ import { moveFacts, coachRequestForGame } from './engine/commentary.js';
 import { readEvents } from './coach-stream.js';
 
 export class CoachClient {
-  constructor({fetchImpl=fetch,onChange=()=>{},endpoint=null,timeoutMs=18000,spectating=false}={}) {
+  constructor({fetchImpl=(...args)=>globalThis.fetch(...args),onChange=()=>{},endpoint=null,timeoutMs=18000,spectating=false}={}) {
     this.fetchImpl=fetchImpl;this.onChange=onChange;this.endpoint=endpoint;this.timeoutMs=timeoutMs;
     this.spectating=spectating;this.enabled=true;this.current=null;this.abort=null;this.generation=0;this.accessToken='';this.active=true;
   }

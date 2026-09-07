@@ -1,4 +1,4 @@
-const CACHE='vanta-chess-v17-openai-coach';
+const CACHE='vanta-chess-v18-fetch-binding';
 const SHELL=[
   './',
   './index.html',

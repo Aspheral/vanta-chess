@@ -119,3 +119,17 @@ test('public coach token is required when configured and request limits work',as
     assert.equal((await fetch(url,opts)).status,429);
   } finally {await new Promise(r=>server.close(r));}
 });
+
+test('default browser fetch keeps the Window receiver',async()=>{
+  const original=globalThis.fetch;
+  globalThis.fetch=async function(){
+    if(this!==globalThis)throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+    return complete('Browser fetch works.');
+  };
+  const client=new CoachClient({endpoint:'https://coach.test/api/coach'});
+  try {
+    client.sync(game(),'w');await settle();
+    assert.equal(client.current.coach.state,'done');
+    assert.equal(client.current.coach.text,'Browser fetch works.');
+  } finally {client.destroy();globalThis.fetch=original;}
+});
