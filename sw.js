@@ -1,4 +1,4 @@
-const CACHE='vanta-chess-v16-commentary';
+const CACHE='vanta-chess-v17-openai-coach';
 const SHELL=[
   './',
   './index.html',
@@ -22,6 +22,9 @@ const SHELL=[
   './src/engine/attack-plan.js',
   './src/engine/controller.js',
   './src/engine/commentary.js',
+  './src/coach-client.js',
+  './src/coach-stream.js',
+  './src/coach.css',
   './src/engine/draw-policy.js',
   './src/engine/evaluation.js',
   './src/engine/personality.js',
@@ -53,6 +56,7 @@ self.addEventListener('activate',event=>{
 self.addEventListener('fetch',event=>{
   const request=event.request;
   if(request.method!=='GET')return;
+  if(new URL(request.url).pathname.endsWith('/api/coach')||new URL(request.url).pathname.endsWith('/coach-config.json'))return;
   const url=new URL(request.url);
   if(url.origin!==self.location.origin)return;
 
@@ -75,3 +79,4 @@ self.addEventListener('fetch',event=>{
     return new Response('Offline',{status:503,statusText:'Offline'});
   })());
 });
+

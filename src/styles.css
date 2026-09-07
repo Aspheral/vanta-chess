@@ -319,10 +319,3 @@ input,select,textarea{font-size:16px}
 @media(hover:none){.square:hover .piece{transform:none}.btn:hover,.icon-btn:hover{border-color:var(--line);background:linear-gradient(180deg,var(--surface-3),var(--surface-2))}.btn.primary:hover{background:linear-gradient(180deg,#b7f686,#98e862)}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition-duration:.001ms!important;animation-duration:.001ms!important}}
 
-/* Move commentary is shared by play and the arena. */
-.commentary-feed{max-height:330px;overflow-y:auto;overflow-wrap:anywhere;padding:0 16px;}
-.commentary-entry{padding:12px 0;border-bottom:1px solid #ffffff14;}
-.commentary-entry:last-child{border-bottom:0;}
-.commentary-entry b{font-size:12px;color:#a8c7fa;}
-.commentary-entry p{font-size:14px;line-height:1.65;margin:6px 0 0;}
-.commentary-panel .panel-head{gap:12px;}

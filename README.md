@@ -158,10 +158,24 @@ benchmarks/      generated benchmark snapshot
 ```
 
 
-## Move commentary
+## OpenAI coach
 
-Vanta's thoughts appears in normal play and the arena. It explains every Vanta move and selectively comments on opponent checks, captures, promotions, castling, and pressure on pieces. Use the On/Off button to toggle it. Comments follow the game timeline when undoing, redoing, or starting a new line.
+The current move's coaching appears above the board in play and the arena. Responses stream as words arrive, using GPT-4.1 mini by default, without waiting for another chess search. The prompt asks for warm, expressive, concise coaching based on verified board facts. No provisional search variations are sent: the coach is instructed to explain the move already played and never promise a future reply.
 
-The generator runs locally without an API key, network request, or extra engine search. It combines a broad phrase bank with actual board facts and avoids recently used phrases in each category. Introductions, positional observations, and conditional continuations vary independently, allowing thousands of combinations for positions with multiple features and a calculated line. It is a chess-aware procedural generator, not a language model: it describes observable effects rather than claiming to know the engine's internal reasoning. Piece pressure is geometric influence, not a guarantee of a legal or winning capture. Possible continuations are checked for legality and only used when the engine line begins with the move actually played. It does not invent mating nets or label every move great.
+Changing position cancels outdated requests. Completed thoughts stay with their timeline entries for undo/redo, and only the current move is displayed. Quiet opponent moves do not call OpenAI. The On/Off and Retry controls let you manage coaching without interrupting play. An API failure displays an honest status rather than silently replacing the coach with templates.
 
-Run `node --test tests/commentary.test.js` for the commentary regression tests.
+### Local play
+
+Requires Node.js 22 or later. Put OPENAI_API_KEY in the ignored .env.local file, then run `npm start` and open http://127.0.0.1:4173. The local server serves only approved game assets; it does not serve env files or server source. The API key remains on the server. API credits are required separately from creating a key. The actual smoke request during implementation returned `credit_balance_exhausted`, so live response quality and latency have not yet been verified.
+
+OPENAI_COACH_MODEL optionally overrides gpt-4.1-mini. Responses are capped at 220 output tokens with a 15-second upstream timeout; exact latency depends on the API and connection. Requests use `store: false`.
+
+### GitHack and hosted play
+
+GitHack can serve the board but cannot run this server or safely hold an OpenAI API key. Deploy the Node server to an HTTPS host using the same source, with OPENAI_API_KEY configured as a server secret. For non-loopback hosting set HOST=0.0.0.0 and a separate random COACH_ACCESS_TOKEN; the server refuses to expose itself publicly without one. COACH_ALLOWED_ORIGIN should be the exact GitHack origin (for example https://rawcdn.githack.com). Enter the hosted /api/coach URL and the separate coach access token in Connection settings above the board. Never enter the OpenAI key into the browser. Connection settings last only for the current page session. Alternatively, set the public URL in coach-config.json; never put tokens or keys in that file.
+
+The server limits concurrent calls and requests per client and day in memory. Those counters reset on restart and are per instance, not a durable distributed spend cap; a multi-instance production deployment should add a shared quota layer. Do not replace `npm start` with a generic directory server in a workspace containing secrets.
+
+### Validation
+
+Run `node --test tests/commentary.test.js` for board facts, stream parsing, OpenAI request construction, quota errors, cancellation, timeline handling, and server access controls. The full `npm test` suite also contains existing chess-engine regressions.

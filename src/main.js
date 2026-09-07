@@ -1,4 +1,4 @@
-import { MoveCommentator, recordCommentary, commentaryPanel } from './engine/commentary.js';
+import { CoachClient, CoachView } from './coach-client.js';
 import { ChessGame } from './chess/game.js';
 import { moveToSAN } from './chess/san.js';
 import { Position } from './chess/position.js';
@@ -18,8 +18,7 @@ class VantaApp {
   constructor(root){
     this.root=root;
     this.game=new ChessGame();
-    this.commentator=new MoveCommentator();
-    this.commentaryEnabled=true;
+    this.coach=new CoachClient();
     this.playerColor=WHITE;
     this.orientation=WHITE;
     this.manualFlip=false;
@@ -44,6 +43,7 @@ class VantaApp {
     this.controller.addEventListener('ponder-result',e=>this.onPonderResult(e.detail));
     this.controller.addEventListener('engine-error',e=>{this.state=STATES.IDLE;this.setBanner(`Engine error: ${e.detail}`);this.render();});
     this.renderSkeleton();
+    this.coachView=new CoachView(this.root.querySelector('#coachAboveBoard'),this.coach);
     this.board=new BoardView(this.boardRoot,{
       onMoveRequest:(f,t,m)=>this.onMoveRequest(f,t,m),
       onEditorSquare:i=>this.onEditorSquare(i),
@@ -56,7 +56,7 @@ class VantaApp {
     this.root.innerHTML=`<div class="app">
       <header class="topbar"><div class="brand"><span class="mark"></span><span>Vanta Chess</span><span class="mode-pill" id="modePill">PLAY</span></div>
       <div class="top-actions"><button class="btn hide-mobile" id="analysisBtn">Analysis</button><button class="btn primary" id="newBtn">New game</button></div></header>
-      <main class="workspace"><section class="left-col"><div class="board-wrap" id="board"></div><div class="board-footer"><div class="turn-label" id="turnLabel"></div><div class="compact-actions"><button class="icon-btn" id="undoBtn" title="Back move">↶</button><button class="icon-btn" id="redoBtn" title="Forward move">↷</button><button class="icon-btn" id="flipBtn" title="Flip board">⇅</button></div></div></section><aside class="side" id="side"></aside></main>
+      <main class="workspace"><section class="left-col"><div id="coachAboveBoard" class="coach-slot"></div><div class="board-wrap" id="board"></div><div class="board-footer"><div class="turn-label" id="turnLabel"></div><div class="compact-actions"><button class="icon-btn" id="undoBtn" title="Back move">↶</button><button class="icon-btn" id="redoBtn" title="Forward move">↷</button><button class="icon-btn" id="flipBtn" title="Flip board">⇅</button></div></div></section><aside class="side" id="side"></aside></main>
       <div class="toast" id="toast" aria-live="polite"></div><div id="modal"></div></div>`;
     this.boardRoot=this.root.querySelector('#board');
     this.sideRoot=this.root.querySelector('#side');
@@ -215,9 +215,7 @@ class VantaApp {
     const uci=`${indexToSquare(move.from)}${indexToSquare(move.to)}${move.promotion||''}`;
     const ponderHit=this.mode==='play'?this.controller.consumePonder(uci,preFen):null;
     this.controller.cancel();
-    const before=this.game.position;
     this.game.play(move);
-    if(this.mode==='play'&&this.commentaryEnabled)recordCommentary(this.game,this.commentator,before,move,{isVanta:false});
     this.branches=[]; this.highlightBranch=null; this.analysisArrow=null;
     const status=this.game.status();
     if(status.over){this.state=STATES.GAME_OVER;this.render();return;}
@@ -280,9 +278,7 @@ class VantaApp {
       this.startEngineMove(objective);
       return;
     }
-    const before=this.game.position;
     this.game.play(move);
-    if(this.commentaryEnabled)recordCommentary(this.game,this.commentator,before,move,{isVanta:true,pv:this.engineInfo?.pv||[]});
     this.analysisArrow=null;
     const status=this.game.status();
     if(status.over){this.state=STATES.GAME_OVER;this.render();return;}
@@ -323,6 +319,7 @@ class VantaApp {
 
   render(){
     if(!this.board)return;
+    this.coach.sync(this.game,this.playerColor===WHITE?BLACK:WHITE,this.mode==='play');
     const position=this.mode==='editing'?this.editorPosition:this.game.position;
     const interactive=this.mode==='editing'||this.mode==='analysis'||((this.state===STATES.PLAYER_TURN||this.state===STATES.PONDERING)&&position.turn===this.playerColor);
     const snap=this.game.snapshot();
@@ -356,7 +353,7 @@ class VantaApp {
     const history=this.game.moveRows();
     const historyHtml=history.length?history.map(r=>`<div class="move-row"><span class="move-no">${r.move}.</span><span class="move-cell">${r.white}</span><span class="move-cell">${r.black}</span></div>`).join(''):'<div class="empty">No moves yet.</div>';
     const candidates=this.mode==='analysis'&&info?.candidates?.length?`<div class="candidate-strip">${info.candidates.slice(0,5).map((c,i)=>`<span><b>${i+1}</b> ${c.uci} <em>${this.formatEval(this.whitePerspective(c.score,this.pendingFen))}</em></span>`).join('')}</div>`:'';
-    let html=(this.mode==='play'?commentaryPanel(this.game,this.commentaryEnabled):'')+`<section class="panel"><div class="panel-head"><span class="panel-title">Engine</span><span class="panel-sub">adaptive rapid · ${this.gameMinimumElo}+ min</span></div><div class="engine-card"><div class="eval-row"><div class="eval">${evalText}</div><div class="thinking">${this.state===STATES.ENGINE_SEARCHING?'searching':this.state===STATES.PONDERING?'pondering':info?.ponderHit?'ponder hit':'ready'}</div></div><div class="metrics"><div class="metric"><b>${info?.depth??0}</b><span>depth</span></div><div class="metric"><b>${this.compact(info?.nodes??0)}</b><span>nodes</span></div><div class="metric"><b>${this.compact(info?.nps??0)}</b><span>nps</span></div><div class="metric"><b>${info?.timeMs??0} ms</b><span>time</span></div></div><div class="pv">${pv}</div>${candidates}</div>${status?.over?`<div class="game-result">${this.resultText(status)}</div>`:''}</section>
+    let html=`<section class="panel"><div class="panel-head"><span class="panel-title">Engine</span><span class="panel-sub">adaptive rapid · ${this.gameMinimumElo}+ min</span></div><div class="engine-card"><div class="eval-row"><div class="eval">${evalText}</div><div class="thinking">${this.state===STATES.ENGINE_SEARCHING?'searching':this.state===STATES.PONDERING?'pondering':info?.ponderHit?'ponder hit':'ready'}</div></div><div class="metrics"><div class="metric"><b>${info?.depth??0}</b><span>depth</span></div><div class="metric"><b>${this.compact(info?.nodes??0)}</b><span>nodes</span></div><div class="metric"><b>${this.compact(info?.nps??0)}</b><span>nps</span></div><div class="metric"><b>${info?.timeMs??0} ms</b><span>time</span></div></div><div class="pv">${pv}</div>${candidates}</div>${status?.over?`<div class="game-result">${this.resultText(status)}</div>`:''}</section>
     <section class="panel"><div class="panel-head"><span class="panel-title">Prediction map</span><span class="panel-sub">if this → then this</span></div><div class="branches">${branchHtml}</div><div class="toggle-row"><span>Prediction arrows</span><button class="switch ${this.predictionArrows?'on':''}" id="arrowToggle"><span></span></button></div></section>
     <section class="panel"><div class="panel-head"><span class="panel-title">Move history</span><span class="panel-sub">SAN</span></div><div class="history">${historyHtml}</div></section>`;
     html+=this.mode==='editing'?this.editorPanel():this.controlPanel();
@@ -392,7 +389,6 @@ class VantaApp {
   }
 
   bindSide(){
-    this.sideRoot.querySelector('[data-commentary-toggle]')?.addEventListener('click',()=>{this.commentaryEnabled=!this.commentaryEnabled;this.render();});
     this.sideRoot.querySelector('#arrowToggle')?.addEventListener('click',()=>{this.predictionArrows=!this.predictionArrows;this.render();});
     this.sideRoot.querySelector('#debugToggle')?.addEventListener('click',()=>{this.debug=!this.debug;this.render();});
     this.sideRoot.querySelector('#gameMinimumElo')?.addEventListener('change',e=>this.setGameMinimumElo(e.target.value));
