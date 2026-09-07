@@ -71,6 +71,16 @@ To convert the target into a measured estimate:
 
 This repository provides the engine controls and benchmark foundation for that process. A true rating still requires external match data.
 
+## Per-game minimum Elo
+
+The `feature/per-game-minimum-elo` build adds a Game-panel selector from **1500+ through 2050+** in 50-point steps. The selected value is an approximate search-strength floor for the current game, not a cap: critical positions can still scale higher inside Vanta's calibrated adaptive range.
+
+The default remains 1500+, preserving Vanta's existing adaptive behavior.
+
+### Faster prediction arrows
+
+The first prediction-map ponder pass is deliberately short so the colored reply arrows appear quickly after Vanta moves. The controller now caps that initial branch-map pass at about **180 ms**, then immediately starts the existing deeper refinement pass while keeping the first completed map visible.
+
 ## Architecture
 
 ```text

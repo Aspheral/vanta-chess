@@ -46,3 +46,13 @@ test('ponder cache is position-specific, counts hit/miss, and survives refinemen
   assert.equal(controller.consumePonder('g1f3',fen),null);
   assert.equal(controller.getPonderStats().misses,1);
 });
+
+test('first ponder pass is capped at 180 ms so prediction arrows appear quickly', () => {
+  FakeWorker.instances.length=0;
+  const controller=new EngineController('worker.js');
+  controller.ponder('some-fen',4,{depth:4,timeMs:300});
+  const message=controller.worker.messages.at(-1);
+  assert.equal(message.type,'ponder');
+  assert.equal(message.options.depth,4);
+  assert.equal(message.options.timeMs,180);
+});

@@ -11,8 +11,26 @@ export const ADAPTIVE_STRENGTH = Object.freeze({
   maxRapidThinkMs: 7500,
 });
 
+export const GAME_ELO_FLOOR = Object.freeze({
+  min: ADAPTIVE_STRENGTH.minElo,
+  max: ADAPTIVE_STRENGTH.maxElo,
+  step: 50,
+  default: ADAPTIVE_STRENGTH.minElo,
+});
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Sanitize a requested per-game minimum strength. Elo here is deliberately an
+ * approximate search-policy label, so callers may request any number while the
+ * UI exposes clean 50-point steps.
+ */
+export function normalizeMinimumElo(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return GAME_ELO_FLOOR.default;
+  return Math.round(clamp(numeric, GAME_ELO_FLOOR.min, GAME_ELO_FLOOR.max));
 }
 
 /**
@@ -21,14 +39,16 @@ function clamp(value, min, max) {
  * positions remain in Vanta's 1500-1750 character band, while genuinely
  * difficult positions can unlock substantially stronger calculation.
  *
- * targetElo is a search-policy label, not a claim that an individual move has
- * a measurable human Elo rating.
+ * minimumElo is a floor for the current game. Critical positions may still
+ * raise the target above it. targetElo is a search-policy label, not a claim
+ * that an individual move has a measurable human Elo rating.
  */
-export function targetEloForCriticality(criticality) {
+export function targetEloForCriticality(criticality, minimumElo = GAME_ELO_FLOOR.default) {
   const c = clamp(Number(criticality) || 0, 0, 100) / 100;
   const curve = Math.pow(c, 1.35);
-  return Math.round(ADAPTIVE_STRENGTH.minElo
+  const adaptiveTarget = Math.round(ADAPTIVE_STRENGTH.minElo
     + (ADAPTIVE_STRENGTH.maxElo - ADAPTIVE_STRENGTH.minElo) * curve);
+  return Math.max(adaptiveTarget, normalizeMinimumElo(minimumElo));
 }
 
 function depthForElo(targetElo) {
@@ -71,7 +91,8 @@ function evalNoiseForElo(_targetElo) {
  */
 export function adaptiveStrengthProfile(position, options = {}) {
   const criticality = positionCriticality(position);
-  const targetElo = targetEloForCriticality(criticality);
+  const minimumElo = normalizeMinimumElo(options.minimumElo);
+  const targetElo = targetEloForCriticality(criticality, minimumElo);
   const span = ADAPTIVE_STRENGTH.maxElo - ADAPTIVE_STRENGTH.minElo;
   const strength = clamp((targetElo - ADAPTIVE_STRENGTH.minElo) / span, 0, 1);
   const maxDepth = depthForElo(targetElo);
@@ -108,8 +129,9 @@ export function adaptiveStrengthProfile(position, options = {}) {
   return {
     mode: 'adaptive',
     criticality,
+    minimumElo,
     targetElo,
-    typicalBand: [ADAPTIVE_STRENGTH.minElo, ADAPTIVE_STRENGTH.typicalUpperElo],
+    typicalBand: [minimumElo, Math.max(minimumElo, ADAPTIVE_STRENGTH.typicalUpperElo)],
     maxElo: ADAPTIVE_STRENGTH.maxElo,
     maxDepth,
     nodeLimit,
