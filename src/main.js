@@ -11,6 +11,7 @@ import { relocateEditorPiece } from './ui/editor-position.js';
 
 const STATES=Object.freeze({IDLE:'IDLE',PLAYER_TURN:'PLAYER_TURN',ENGINE_SEARCHING:'ENGINE_SEARCHING',PONDERING:'PONDERING',POSITION_EDITING:'POSITION_EDITING',ANALYSIS:'ANALYSIS',GAME_OVER:'GAME_OVER'});
 const GLYPHS={K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
+const GAME_MINIMUM_ELOS=Object.freeze(Array.from({length:12},(_,i)=>1500+i*50));
 
 class VantaApp {
   constructor(root){
@@ -34,6 +35,7 @@ class VantaApp {
     this.editorWarning='';
     this.engineClockMs=600000;
     this.engineIncrementMs=0;
+    this.gameMinimumElo=1500;
     this.controller=new EngineController(new URL('./engine/worker.js',import.meta.url));
     this.controller.addEventListener('search-result',e=>this.onSearchResult(e.detail));
     this.controller.addEventListener('ponder-result',e=>this.onPonderResult(e.detail));
@@ -75,6 +77,27 @@ class VantaApp {
     this.state=this.game.position.turn===this.playerColor?STATES.PLAYER_TURN:STATES.ENGINE_SEARCHING;
     this.render();
     if(this.game.position.turn!==this.playerColor) this.startEngineMove();
+  }
+
+  setGameMinimumElo(raw){
+    const numeric=Number(raw);
+    const value=GAME_MINIMUM_ELOS.includes(numeric)?numeric:1500;
+    if(value===this.gameMinimumElo)return;
+    this.gameMinimumElo=value;
+    this.engineInfo=null;this.branches=[];this.highlightBranch=null;
+
+    if(this.mode==='play'&&this.game.position.turn!==this.playerColor&&this.state===STATES.ENGINE_SEARCHING){
+      this.controller.cancel();
+      this.setBanner(`Vanta minimum set to ~${value} Elo for this game.`);
+      this.startEngineMove();
+      return;
+    }
+    if(this.mode==='play'&&this.game.position.turn===this.playerColor&&this.state===STATES.PONDERING){
+      this.controller.cancel();
+      this.state=STATES.PLAYER_TURN;
+    }
+    this.setBanner(`Vanta minimum set to ~${value} Elo for this game.`);
+    this.render();
   }
 
   setBanner(text){
@@ -195,10 +218,11 @@ class VantaApp {
     if(this.mode==='analysis'){this.state=STATES.ANALYSIS;this.render();this.startAnalysis();return;}
     this.state=STATES.ENGINE_SEARCHING; this.render();
 
-    // Ponder hits stay instant in quiet positions. Tactical positions get a
-    // fresh rapid search so an old shallow branch cannot become a blunder.
+    // Ponder hits stay instant at the default floor in quiet positions. Higher
+    // per-game floors always receive a fresh search so a shallow cached branch
+    // cannot silently bypass the requested minimum strength.
     const critical=positionCriticality(this.game.position)>=45;
-    if(ponderHit&&!critical){
+    if(ponderHit&&!critical&&this.gameMinimumElo===1500){
       const planned=this.game.position.moveFromUci(ponderHit.engineMove);
       if(planned){
         this.engineInfo={score:ponderHit.evaluation,objectiveScore:ponderHit.evaluation,depth:ponderHit.depth,nodes:0,qnodes:0,ttHits:0,timeMs:0,nps:0,pv:ponderHit.continuation.slice(1),ponderHit:true,candidates:[],criticality:0};
@@ -213,7 +237,7 @@ class VantaApp {
     const fen=this.game.position.toFEN();
     const excludeMoves=repetitionExclusions(this.game,knownScore);
     this.pendingPurpose='play';this.pendingFen=fen;this.state=STATES.ENGINE_SEARCHING;this.analysisArrow=null;this.render();
-    this.controller.search(fen,{remainingTimeMs:this.engineClockMs,incrementMs:this.engineIncrementMs,maxDepth:6,excludeMoves});
+    this.controller.search(fen,{remainingTimeMs:this.engineClockMs,incrementMs:this.engineIncrementMs,maxDepth:6,excludeMoves,minimumElo:this.gameMinimumElo});
   }
 
   startAnalysis(){
@@ -323,22 +347,24 @@ class VantaApp {
     const history=this.game.moveRows();
     const historyHtml=history.length?history.map(r=>`<div class="move-row"><span class="move-no">${r.move}.</span><span class="move-cell">${r.white}</span><span class="move-cell">${r.black}</span></div>`).join(''):'<div class="empty">No moves yet.</div>';
     const candidates=this.mode==='analysis'&&info?.candidates?.length?`<div class="candidate-strip">${info.candidates.slice(0,5).map((c,i)=>`<span><b>${i+1}</b> ${c.uci} <em>${this.formatEval(this.whitePerspective(c.score,this.pendingFen))}</em></span>`).join('')}</div>`:'';
-    let html=`<section class="panel"><div class="panel-head"><span class="panel-title">Engine</span><span class="panel-sub">adaptive rapid · calculated aggression</span></div><div class="engine-card"><div class="eval-row"><div class="eval">${evalText}</div><div class="thinking">${this.state===STATES.ENGINE_SEARCHING?'searching':this.state===STATES.PONDERING?'pondering':info?.ponderHit?'ponder hit':'ready'}</div></div><div class="metrics"><div class="metric"><b>${info?.depth??0}</b><span>depth</span></div><div class="metric"><b>${this.compact(info?.nodes??0)}</b><span>nodes</span></div><div class="metric"><b>${this.compact(info?.nps??0)}</b><span>nps</span></div><div class="metric"><b>${info?.timeMs??0} ms</b><span>time</span></div></div><div class="pv">${pv}</div>${candidates}</div>${status?.over?`<div class="game-result">${this.resultText(status)}</div>`:''}</section>
+    let html=`<section class="panel"><div class="panel-head"><span class="panel-title">Engine</span><span class="panel-sub">adaptive rapid · ${this.gameMinimumElo}+ min</span></div><div class="engine-card"><div class="eval-row"><div class="eval">${evalText}</div><div class="thinking">${this.state===STATES.ENGINE_SEARCHING?'searching':this.state===STATES.PONDERING?'pondering':info?.ponderHit?'ponder hit':'ready'}</div></div><div class="metrics"><div class="metric"><b>${info?.depth??0}</b><span>depth</span></div><div class="metric"><b>${this.compact(info?.nodes??0)}</b><span>nodes</span></div><div class="metric"><b>${this.compact(info?.nps??0)}</b><span>nps</span></div><div class="metric"><b>${info?.timeMs??0} ms</b><span>time</span></div></div><div class="pv">${pv}</div>${candidates}</div>${status?.over?`<div class="game-result">${this.resultText(status)}</div>`:''}</section>
     <section class="panel"><div class="panel-head"><span class="panel-title">Prediction map</span><span class="panel-sub">if this → then this</span></div><div class="branches">${branchHtml}</div><div class="toggle-row"><span>Prediction arrows</span><button class="switch ${this.predictionArrows?'on':''}" id="arrowToggle"><span></span></button></div></section>
     <section class="panel"><div class="panel-head"><span class="panel-title">Move history</span><span class="panel-sub">SAN</span></div><div class="history">${historyHtml}</div></section>`;
     html+=this.mode==='editing'?this.editorPanel():this.controlPanel();
     if(this.debug&&info) {
       const ponder=this.controller.getPonderStats();
-      html+=`<section class="panel"><div class="panel-head"><span class="panel-title">Debug</span></div><div class="debug">qnodes ${info.qnodes}\ntt hits ${info.ttHits}\ncutoffs ${info.cutoffs??0}\ncriticality ${info.criticality??0}\nsoft ${info.softTimeMs??0} ms\nhard ${info.hardTimeMs??0} ms\nunstable ${Boolean(info.unstable)}\nroot risk ${info.selectedRisk??0}\nengine clock ${Math.round(this.engineClockMs/1000)} s\nponder hits ${ponder.hits}\nponder misses ${ponder.misses}\nobjective ${info.objectiveScore}\nselected ${info.score}\n${(info.candidates||[]).map(c=>`${c.uci} ${c.score} p:${c.personality}`).join('\n')}</div></section>`;
+      html+=`<section class="panel"><div class="panel-head"><span class="panel-title">Debug</span></div><div class="debug">qnodes ${info.qnodes}\ntt hits ${info.ttHits}\ncutoffs ${info.cutoffs??0}\ncriticality ${info.criticality??0}\ngame min elo ${this.gameMinimumElo}\nadaptive target ${info.targetElo??'—'}\nsoft ${info.softTimeMs??0} ms\nhard ${info.hardTimeMs??0} ms\nunstable ${Boolean(info.unstable)}\nroot risk ${info.selectedRisk??0}\nengine clock ${Math.round(this.engineClockMs/1000)} s\nponder hits ${ponder.hits}\nponder misses ${ponder.misses}\nobjective ${info.objectiveScore}\nselected ${info.score}\n${(info.candidates||[]).map(c=>`${c.uci} ${c.score} p:${c.personality}`).join('\n')}</div></section>`;
     }
     this.sideRoot.innerHTML=html;
     this.bindSide();
   }
 
   controlPanel(){
+    const eloOptions=GAME_MINIMUM_ELOS.map(elo=>`<option value="${elo}" ${this.gameMinimumElo===elo?'selected':''}>${elo}+${elo===1500?' · default':''}${elo===2050?' · max':''}</option>`).join('');
     return `<section class="panel"><div class="panel-head"><span class="panel-title">Game</span><span class="panel-sub">Vanta · controlled violence</span></div><div class="controls">
       <button class="btn ${this.playerColor===WHITE?'primary':''}" id="playWhite">Play White</button><button class="btn ${this.playerColor===BLACK?'primary':''}" id="playBlack">Play Black</button>
       <button class="btn" id="editBtn">Edit position</button><button class="btn" id="analyzeBtn">${this.mode==='analysis'?'Exit analysis':'Analyze'}</button>
+      <div class="field wide"><label>Approx. minimum Elo · this game</label><select id="gameMinimumElo" title="Search-strength floor for this game. Critical positions may scale higher.">${eloOptions}</select></div>
       <div class="field wide"><label>FEN</label><input id="fenInput" value="${this.escapeAttr(this.game.position.toFEN())}" /></div>
       <button class="btn" id="loadFen">Load FEN</button><button class="btn" id="copyFen">Copy FEN</button>
     </div><div class="toggle-row"><span>Developer statistics</span><button class="switch ${this.debug?'on':''}" id="debugToggle"><span></span></button></div></section>`;
@@ -359,6 +385,7 @@ class VantaApp {
   bindSide(){
     this.sideRoot.querySelector('#arrowToggle')?.addEventListener('click',()=>{this.predictionArrows=!this.predictionArrows;this.render();});
     this.sideRoot.querySelector('#debugToggle')?.addEventListener('click',()=>{this.debug=!this.debug;this.render();});
+    this.sideRoot.querySelector('#gameMinimumElo')?.addEventListener('change',e=>this.setGameMinimumElo(e.target.value));
     this.sideRoot.querySelector('#playWhite')?.addEventListener('click',()=>this.newGame(WHITE));
     this.sideRoot.querySelector('#playBlack')?.addEventListener('click',()=>this.newGame(BLACK));
     this.sideRoot.querySelector('#editBtn')?.addEventListener('click',()=>this.enterEditor());
