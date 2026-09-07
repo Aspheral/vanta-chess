@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { Position } from '../src/chess/position.js';
 import {
   ADAPTIVE_STRENGTH,
+  GAME_ELO_FLOOR,
   adaptiveStrengthProfile,
+  normalizeMinimumElo,
   targetEloForCriticality,
 } from '../src/engine/adaptive-strength.js';
 
@@ -19,6 +21,30 @@ test('ordinary criticalities stay centered in Vanta typical 1500-1750 band', () 
   const average = ordinary.reduce((a, b) => a + b, 0) / ordinary.length;
   assert.ok(average >= 1500 && average <= 1750, `ordinary average ${average}`);
   assert.ok(Math.max(...ordinary) <= 1750, `ordinary targets ${ordinary.join(', ')}`);
+});
+
+test('per-game minimum Elo raises quiet-position search without capping critical scaling', () => {
+  assert.equal(targetEloForCriticality(0, 1650), 1650);
+  assert.equal(targetEloForCriticality(20, 1800), 1800);
+  assert.ok(targetEloForCriticality(100, 1650) > 1650);
+
+  const quiet = Position.start();
+  const baseline = adaptiveStrengthProfile(quiet, { remainingTimeMs: 600000, incrementMs: 0 });
+  const stronger = adaptiveStrengthProfile(quiet, { remainingTimeMs: 600000, incrementMs: 0, minimumElo: 1800 });
+
+  assert.equal(stronger.minimumElo, 1800);
+  assert.ok(stronger.targetElo >= 1800);
+  assert.ok(stronger.nodeLimit > baseline.nodeLimit);
+  assert.ok(stronger.softTimeMs > baseline.softTimeMs);
+  assert.ok(stronger.hardTimeMs > baseline.hardTimeMs);
+  assert.ok(stronger.selectionWindow < baseline.selectionWindow);
+});
+
+test('per-game minimum Elo is safely clamped to the calibrated adaptive range', () => {
+  assert.equal(normalizeMinimumElo(undefined), GAME_ELO_FLOOR.default);
+  assert.equal(normalizeMinimumElo(800), GAME_ELO_FLOOR.min);
+  assert.equal(normalizeMinimumElo(9999), GAME_ELO_FLOOR.max);
+  assert.equal(targetEloForCriticality(0, 9999), ADAPTIVE_STRENGTH.maxElo);
 });
 
 test('complex positions receive more depth, nodes, time and a tighter move window', () => {
