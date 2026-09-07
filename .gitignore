@@ -3,3 +3,7 @@ node_modules/
 *.log
 screenshots/
 coverage/
+
+
+.env*
+!.env.example

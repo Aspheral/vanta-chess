@@ -1,3 +1,4 @@
+import { CoachClient, CoachView } from './coach-client.js';
 import {ChessGame} from './chess/game.js';
 import {WHITE,BLACK} from './chess/constants.js';
 import {BoardView} from './ui/board.js';
@@ -40,6 +41,7 @@ class UltraSpectate{
   constructor(root){
     this.root=root;
     this.game=new ChessGame();
+    this.coach=new CoachClient({spectating:true});
     this.vantaColor=Math.random()<.5?WHITE:BLACK;
     this.stockfishColor=this.vantaColor===WHITE?BLACK:WHITE;
     this.opening=null;
@@ -54,6 +56,7 @@ class UltraSpectate{
     this.vanta=new EngineController(new URL('./engine/worker.js',import.meta.url),ULTRA_CONFIG);
     this.stockfish=new StockfishClient();
     this.renderShell();
+    this.coachView=new CoachView(this.root.querySelector('#coachAboveBoard'),this.coach);
     this.board=new BoardView(this.root.querySelector('#spectateBoard'));
     this.bind();
     this.newMatch();
@@ -74,6 +77,7 @@ class UltraSpectate{
             <article class="fighter-card stockfish-card" id="stockfishCard"><div class="fighter-icon fish">SF</div><div><span class="fighter-name">${STOCKFISH_LABEL}</span><span class="fighter-sub">portable browser UCI · full skill</span></div><b class="fighter-color" id="stockfishColor"></b></article>
           </div>
           <div class="opening-banner"><span>OPENING</span><b id="openingName">Random popular opening</b><em id="openingEco"></em></div>
+          <div id="coachAboveBoard" class="coach-slot"></div>
           <div class="board-wrap spectate-board" id="spectateBoard"></div>
           <div class="spectate-underboard"><div><span class="spectate-pulse"></span><b id="spectateStatus">Preparing…</b></div><div class="spectate-controls"><button class="icon-btn" id="spectateFlip" title="Flip board">⇅</button><button class="btn" id="spectatePause">Pause</button></div></div>
         </section>
@@ -207,6 +211,7 @@ class UltraSpectate{
   }
 
   renderHistory(){
+    this.coach.sync(this.game,this.vantaColor);
     const rows=this.game.moveRows();
     const el=this.root.querySelector('#spectateHistory');
     el.innerHTML=rows.length?rows.map(r=>`<div class="spectate-move"><span>${r.move}.</span><b>${r.white||'…'}</b><b>${r.black||''}</b></div>`).join(''):'<div class="empty">Opening moves will appear here.</div>';
@@ -259,8 +264,9 @@ class UltraSpectate{
   }
 
   destroy(){
-    this.generation++;this.vanta.destroy();this.stockfish.destroy();
+    this.coach.destroy();this.generation++;this.vanta.destroy();this.stockfish.destroy();
   }
 }
 
 new UltraSpectate(document.querySelector('#app'));
+

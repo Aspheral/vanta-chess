@@ -1,3 +1,4 @@
+import { CoachClient, CoachView } from './coach-client.js';
 import { ChessGame } from './chess/game.js';
 import { moveToSAN } from './chess/san.js';
 import { Position } from './chess/position.js';
@@ -17,6 +18,7 @@ class VantaApp {
   constructor(root){
     this.root=root;
     this.game=new ChessGame();
+    this.coach=new CoachClient();
     this.playerColor=WHITE;
     this.orientation=WHITE;
     this.manualFlip=false;
@@ -41,6 +43,7 @@ class VantaApp {
     this.controller.addEventListener('ponder-result',e=>this.onPonderResult(e.detail));
     this.controller.addEventListener('engine-error',e=>{this.state=STATES.IDLE;this.setBanner(`Engine error: ${e.detail}`);this.render();});
     this.renderSkeleton();
+    this.coachView=new CoachView(this.root.querySelector('#coachAboveBoard'),this.coach);
     this.board=new BoardView(this.boardRoot,{
       onMoveRequest:(f,t,m)=>this.onMoveRequest(f,t,m),
       onEditorSquare:i=>this.onEditorSquare(i),
@@ -53,7 +56,7 @@ class VantaApp {
     this.root.innerHTML=`<div class="app">
       <header class="topbar"><div class="brand"><span class="mark"></span><span>Vanta Chess</span><span class="mode-pill" id="modePill">PLAY</span></div>
       <div class="top-actions"><button class="btn hide-mobile" id="analysisBtn">Analysis</button><button class="btn primary" id="newBtn">New game</button></div></header>
-      <main class="workspace"><section class="left-col"><div class="board-wrap" id="board"></div><div class="board-footer"><div class="turn-label" id="turnLabel"></div><div class="compact-actions"><button class="icon-btn" id="undoBtn" title="Back move">↶</button><button class="icon-btn" id="redoBtn" title="Forward move">↷</button><button class="icon-btn" id="flipBtn" title="Flip board">⇅</button></div></div></section><aside class="side" id="side"></aside></main>
+      <main class="workspace"><section class="left-col"><div id="coachAboveBoard" class="coach-slot"></div><div class="board-wrap" id="board"></div><div class="board-footer"><div class="turn-label" id="turnLabel"></div><div class="compact-actions"><button class="icon-btn" id="undoBtn" title="Back move">↶</button><button class="icon-btn" id="redoBtn" title="Forward move">↷</button><button class="icon-btn" id="flipBtn" title="Flip board">⇅</button></div></div></section><aside class="side" id="side"></aside></main>
       <div class="toast" id="toast" aria-live="polite"></div><div id="modal"></div></div>`;
     this.boardRoot=this.root.querySelector('#board');
     this.sideRoot=this.root.querySelector('#side');
@@ -212,7 +215,8 @@ class VantaApp {
     const uci=`${indexToSquare(move.from)}${indexToSquare(move.to)}${move.promotion||''}`;
     const ponderHit=this.mode==='play'?this.controller.consumePonder(uci,preFen):null;
     this.controller.cancel();
-    this.game.play(move); this.branches=[]; this.highlightBranch=null; this.analysisArrow=null;
+    this.game.play(move);
+    this.branches=[]; this.highlightBranch=null; this.analysisArrow=null;
     const status=this.game.status();
     if(status.over){this.state=STATES.GAME_OVER;this.render();return;}
     if(this.mode==='analysis'){this.state=STATES.ANALYSIS;this.render();this.startAnalysis();return;}
@@ -274,7 +278,8 @@ class VantaApp {
       this.startEngineMove(objective);
       return;
     }
-    this.game.play(move);this.analysisArrow=null;
+    this.game.play(move);
+    this.analysisArrow=null;
     const status=this.game.status();
     if(status.over){this.state=STATES.GAME_OVER;this.render();return;}
     this.state=STATES.PONDERING;this.render();
@@ -314,6 +319,7 @@ class VantaApp {
 
   render(){
     if(!this.board)return;
+    this.coach.sync(this.game,this.playerColor===WHITE?BLACK:WHITE,this.mode==='play');
     const position=this.mode==='editing'?this.editorPosition:this.game.position;
     const interactive=this.mode==='editing'||this.mode==='analysis'||((this.state===STATES.PLAYER_TURN||this.state===STATES.PONDERING)&&position.turn===this.playerColor);
     const snap=this.game.snapshot();

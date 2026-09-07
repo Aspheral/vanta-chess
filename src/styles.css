@@ -318,3 +318,4 @@ input,select,textarea{font-size:16px}
 
 @media(hover:none){.square:hover .piece{transform:none}.btn:hover,.icon-btn:hover{border-color:var(--line);background:linear-gradient(180deg,var(--surface-3),var(--surface-2))}.btn.primary:hover{background:linear-gradient(180deg,#b7f686,#98e862)}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition-duration:.001ms!important;animation-duration:.001ms!important}}
+
