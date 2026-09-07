@@ -76,7 +76,11 @@ export class EngineController extends EventTarget {
     this.busy=true;
     this.ponderFen=fen;
     this.ponderCache.clear();
-    this.worker.postMessage({type:'ponder',searchId:this.searchId,fen,count,config:this.config,options});
+    // Prediction arrows are UI feedback, so favor a quick first branch map.
+    // A deeper refinePonder pass follows immediately after the first result.
+    const quickOptions={...options};
+    if(quickOptions.timeMs!=null) quickOptions.timeMs=Math.min(Number(quickOptions.timeMs)||180,180);
+    this.worker.postMessage({type:'ponder',searchId:this.searchId,fen,count,config:this.config,options:quickOptions});
     return this.searchId;
   }
 
