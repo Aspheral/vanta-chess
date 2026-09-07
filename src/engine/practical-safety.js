@@ -9,6 +9,10 @@ export const AVOIDABLE_LOSS_FLOOR = 110;
 const SAFETY_RESCUE_WINDOW = 140;
 const MATE_PROBE_RISK_FLOOR = 240;
 
+function nowMs() {
+  return globalThis.performance?.now?.() ?? Date.now();
+}
+
 function hasImmediateMate(position) {
   for (const move of position.legalMoves()) {
     const next = position.makeMove(move);
@@ -93,6 +97,24 @@ export function movedPieceCaptureLoss(position, move, seeMemo = new Map()) {
   return Math.max(0, Math.round(worstNetLoss));
 }
 
+function practicalSafetyHazardForMove(position, move, options = {}, seeMemo = new Map()) {
+  if (!move || position.isInCheck()) return null;
+
+  const floor = Math.max(80, Number(options.lossFloor) || AVOIDABLE_LOSS_FLOOR);
+  const ignoredLoss = ignoredAttackedPieceLoss(position, move, seeMemo);
+  const movedLoss = movedPieceCaptureLoss(position, move, seeMemo);
+  const movedFloor = MOVED_LOSS_FLOOR[typeOf(move.piece)] ?? floor;
+  const ignoredUnsafe = ignoredLoss >= floor;
+  const movedUnsafe = movedLoss >= movedFloor;
+
+  if (!ignoredUnsafe && !movedUnsafe) return null;
+  return {
+    uci: moveToUci(move),
+    loss: Math.max(ignoredLoss, movedLoss),
+    reason: movedUnsafe ? 'moved-piece-capture' : 'ignored-attacked-piece',
+  };
+}
+
 /**
  * Classify root moves that deserve practical verification.
  *
@@ -104,7 +126,6 @@ export function movedPieceCaptureLoss(position, move, seeMemo = new Map()) {
 export function practicalSafetyExclusions(position, options = {}) {
   if (position.isInCheck()) return [];
 
-  const floor = Math.max(80, Number(options.lossFloor) || AVOIDABLE_LOSS_FLOOR);
   const preExcluded = new Set(options.excludeMoves || []);
   const legal = position.legalMoves().filter(move => !preExcluded.has(moveToUci(move)));
   if (legal.length <= 1) return [];
@@ -114,21 +135,9 @@ export function practicalSafetyExclusions(position, options = {}) {
   let safeCount = 0;
 
   for (const move of legal) {
-    const ignoredLoss = ignoredAttackedPieceLoss(position, move, seeMemo);
-    const movedLoss = movedPieceCaptureLoss(position, move, seeMemo);
-    const movedFloor = MOVED_LOSS_FLOOR[typeOf(move.piece)] ?? floor;
-    const ignoredUnsafe = ignoredLoss >= floor;
-    const movedUnsafe = movedLoss >= movedFloor;
-
-    if (ignoredUnsafe || movedUnsafe) {
-      unsafe.push({
-        uci: moveToUci(move),
-        loss: Math.max(ignoredLoss, movedLoss),
-        reason: movedUnsafe ? 'moved-piece-capture' : 'ignored-attacked-piece',
-      });
-    } else {
-      safeCount++;
-    }
+    const hazard = practicalSafetyHazardForMove(position, move, options, seeMemo);
+    if (hazard) unsafe.push(hazard);
+    else safeCount++;
   }
 
   if (!safeCount) return [];
@@ -164,31 +173,76 @@ function mateProbe(position, move, result) {
 }
 
 /**
- * Search every legal root move first, then use the practical detector only as
- * a bounded post-search rescue. This is intentionally different from the old
- * implementation, which pre-excluded every heuristic hazard before alpha-beta.
+ * Search first, then inspect only the selected move on the common path.
  *
- * Material hazards may only be replaced by an already-nearby objective line.
- * A proven mate is different: once the selected move is demonstrated to lose
- * by force, the best exact candidate that does not share that forced mate is
- * preferable regardless of a shallow centipawn disagreement.
+ * The previous implementation ran practicalSafetyExclusions() across every
+ * legal root move BEFORE engine.search(). That work lived outside the engine's
+ * hard deadline and could consume hundreds of milliseconds before the selected
+ * strength search even started. In browser bullet tests that caused the outer
+ * worker watchdog to fire even though the configured search itself was sound.
+ *
+ * We now preserve the same rescue semantics while making the expensive full
+ * root scan lazy: it runs only when the selected move itself looks hazardous or
+ * a mate probe says the selected move loses by force.
  */
 export function searchWithPracticalSafety(engine, position, options = {}) {
-  const automatic = practicalSafetyExclusions(position, options);
+  const wrapperStarted = nowMs();
   const result = engine.search(position, options);
 
   if (!result.move) {
     return {
       ...result,
-      practicalSafety: { triggered: false, rescued: false, exclusions: automatic },
+      practicalSafety: {
+        triggered: false,
+        rescued: false,
+        exclusions: [],
+        timing: {
+          wrapperMs: Math.round(nowMs() - wrapperStarted),
+          rootScanMs: 0,
+          selectedCheckMs: 0,
+          lazyRootScan: true,
+        },
+      },
     };
   }
 
-  const hazards = new Map(automatic.map(item => [item.uci, item]));
   const selectedUci = moveToUci(result.move);
-  const selectedHazard = hazards.get(selectedUci) || null;
+  const selectedStarted = nowMs();
+  const selectedQuickHazard = practicalSafetyHazardForMove(
+    position,
+    result.move,
+    options,
+    new Map(),
+  );
   const selectedMate = mateProbe(position, result.move, result);
+  const selectedCheckMs = Math.round(nowMs() - selectedStarted);
 
+  if (!selectedQuickHazard && !selectedMate.forced) {
+    return {
+      ...result,
+      practicalSafety: {
+        triggered: false,
+        rescued: false,
+        exclusions: [],
+        mateProbe: selectedMate,
+        timing: {
+          wrapperMs: Math.round(nowMs() - wrapperStarted),
+          rootScanMs: 0,
+          selectedCheckMs,
+          lazyRootScan: true,
+        },
+      },
+    };
+  }
+
+  const rootScanStarted = nowMs();
+  const automatic = practicalSafetyExclusions(position, options);
+  const rootScanMs = Math.round(nowMs() - rootScanStarted);
+  const hazards = new Map(automatic.map(item => [item.uci, item]));
+
+  // Preserve the old all-moves-unsafe behavior. practicalSafetyExclusions()
+  // intentionally returns [] when no safe root move exists.
+  const selectedHazard = hazards.get(selectedUci) || null;
   if (!selectedHazard && !selectedMate.forced) {
     return {
       ...result,
@@ -197,6 +251,12 @@ export function searchWithPracticalSafety(engine, position, options = {}) {
         rescued: false,
         exclusions: automatic,
         mateProbe: selectedMate,
+        timing: {
+          wrapperMs: Math.round(nowMs() - wrapperStarted),
+          rootScanMs,
+          selectedCheckMs,
+          lazyRootScan: true,
+        },
       },
     };
   }
@@ -238,6 +298,12 @@ export function searchWithPracticalSafety(engine, position, options = {}) {
           : null),
         exclusions: automatic,
         mateProbe: { forced: selectedMate.forced, nodes: mateProbeNodes },
+        timing: {
+          wrapperMs: Math.round(nowMs() - wrapperStarted),
+          rootScanMs,
+          selectedCheckMs,
+          lazyRootScan: true,
+        },
       },
     };
   }
@@ -258,6 +324,12 @@ export function searchWithPracticalSafety(engine, position, options = {}) {
       rescue: { uci: rescue.uci, score: rescue.score },
       exclusions: automatic,
       mateProbe: { forced: selectedMate.forced, nodes: mateProbeNodes },
+      timing: {
+        wrapperMs: Math.round(nowMs() - wrapperStarted),
+        rootScanMs,
+        selectedCheckMs,
+        lazyRootScan: true,
+      },
     },
   };
 }
